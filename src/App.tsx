@@ -54,7 +54,7 @@ export default function App() {
   // Smart Add (Scanner) states
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [scannedResult, setScannedResult] = useState<{ name: string, prices: number[] } | null>(null);
+  const [scannedResult, setScannedResult] = useState<{ name: string, atacado: number, varejo: number } | null>(null);
   const [selectedScannedPrice, setSelectedScannedPrice] = useState<number | null>(null);
   const [scannerError, setScannerError] = useState<string | null>(null);
 
@@ -347,13 +347,13 @@ export default function App() {
         throw new Error('Nenhum texto identificado. Tente aproximar mais a câmera ou melhorar a iluminação.');
       }
 
-      const rawLines = text.split('\n').map(l => l.trim()).filter(l => l.length > 2);
+      const rawLines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
       
       if (rawLines.length < 2) {
-        throw new Error('Não foi possível capturar as linhas principais do produto. Tente aproximar mais.');
+        throw new Error('Não foi possível identificar o nome e complemento do produto. Tente centralizar a etiqueta.');
       }
 
-      // REGRA FIXA: Nome é a junção da linha 1 e 2
+      // REGRA FIXA: Nome é a junção da linha 1 e 2 (Exatamente como capturado)
       const productName = `${rawLines[0]} ${rawLines[1]}`.trim();
 
       // REGRA FIXA: Identificar todos os números no formato XX,XX ou XX.XX
@@ -378,18 +378,16 @@ export default function App() {
       const allSorted = [...foundPrices].sort((a, b) => a - b);
       
       // REGRA FIXA: Menor valor = Atacado, Maior valor = Varejo
-      // Se houver apenas um valor, ele será ambos.
       const atacado = allSorted[0];
       const varejo = allSorted[allSorted.length - 1];
       
       const result = {
         name: productName,
-        prices: allSorted.length > 1 ? [varejo, atacado] : [varejo]
+        atacado: atacado,
+        varejo: varejo
       };
 
       setScannedResult(result);
-      // Seleciona Varejo (o maior valor) por padrão
-      setSelectedScannedPrice(varejo);
     } catch (err) {
       console.error(err);
       setScannerError(err instanceof Error ? err.message : "Erro desconhecido ao processar o OCR local.");
@@ -398,15 +396,14 @@ export default function App() {
     }
   };
 
-  const addItemFromScanner = (type: 'unit' | 'wholesale') => {
-    if (!scannedResult || selectedScannedPrice === null) return;
+  const addItemFromScanner = (price: number, type: 'atacado' | 'varejo') => {
+    if (!scannedResult) return;
 
-    const suffix = type === 'wholesale' ? ' (Atacado)' : '';
     const newItem: ShoppingItem = {
       id: crypto.randomUUID(),
-      name: `${scannedResult.name}${suffix}`,
+      name: `${scannedResult.name}${type === 'atacado' ? ' (Atacado)' : ''}`,
       quantity: 1,
-      price: selectedScannedPrice,
+      price: price,
     };
 
     setItems((prev) => [newItem, ...prev]);
@@ -1053,52 +1050,50 @@ export default function App() {
                       </div>
 
                       <div className="mb-4">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Produto Detectado</label>
-                        <p className="text-lg font-black text-slate-800 leading-tight capitalize">{scannedResult.name}</p>
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Produto</label>
+                        <p className="text-base font-black text-slate-800 leading-tight">{scannedResult.name}</p>
                       </div>
 
-                      <div className="mb-6">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Preços Encontrados</label>
-                        <div className="flex flex-wrap gap-2 mt-2">
-                          {scannedResult.prices.map((p, i) => (
-                            <button
-                              key={i}
-                              onClick={() => setSelectedScannedPrice(p)}
-                              className={`px-3 py-2 rounded-xl border-2 transition-all font-black flex flex-col items-center min-w-[80px] ${selectedScannedPrice === p ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-100 bg-slate-50 text-slate-400'}`}
-                            >
-                              <span className="text-sm">{formatCurrency(p)}</span>
-                              {scannedResult.prices.length === 2 && (
-                                <span className="text-[8px] uppercase tracking-tighter opacity-60">
-                                  {i === 0 ? 'Varejo' : 'Atacado'}
-                                </span>
-                              )}
-                            </button>
-                          ))}
+                      <div className="space-y-3 mb-6 bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest text-center mb-2">Preços encontrados</p>
+                        <div className="flex justify-between items-center px-2">
+                          <span className="text-xs font-bold text-slate-500 uppercase">Atacado:</span>
+                          <span className="text-sm font-black text-emerald-600">{formatCurrency(scannedResult.atacado)}</span>
+                        </div>
+                        <div className="flex justify-between items-center px-2">
+                          <span className="text-xs font-bold text-slate-500 uppercase">Varejo:</span>
+                          <span className="text-sm font-black text-slate-800">{formatCurrency(scannedResult.varejo)}</span>
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-2 mb-4">
+                      <div className="mb-6 text-center">
+                        <p className="text-xs font-bold text-slate-600">Qual preço deseja usar?</p>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-2 mb-4">
                         <motion.button 
-                          whileTap={{ scale: 0.95 }}
-                          onClick={() => addItemFromScanner('unit')}
-                          className="py-3 px-2 rounded-2xl bg-emerald-500 text-white font-black text-[10px] uppercase tracking-tighter shadow-lg shadow-emerald-200 hover:bg-emerald-600 transition-colors"
+                          whileTap={{ scale: 0.98 }}
+                          onClick={() => addItemFromScanner(scannedResult.atacado, 'atacado')}
+                          className="py-3 px-4 rounded-2xl bg-emerald-500 text-white font-black text-xs uppercase tracking-tighter shadow-lg shadow-emerald-200 hover:bg-emerald-600 transition-colors flex justify-between items-center"
                         >
-                          Usar como Unitário
+                          <span>Usar preço atacado</span>
+                          <span>{formatCurrency(scannedResult.atacado)}</span>
                         </motion.button>
                         <motion.button 
-                          whileTap={{ scale: 0.95 }}
-                          onClick={() => addItemFromScanner('wholesale')}
-                          className="py-3 px-2 rounded-2xl bg-slate-800 text-white font-black text-[10px] uppercase tracking-tighter shadow-lg shadow-slate-200 hover:bg-black transition-colors"
+                          whileTap={{ scale: 0.98 }}
+                          onClick={() => addItemFromScanner(scannedResult.varejo, 'varejo')}
+                          className="py-3 px-4 rounded-2xl bg-slate-800 text-white font-black text-xs uppercase tracking-tighter shadow-lg shadow-slate-200 hover:bg-black transition-colors flex justify-between items-center"
                         >
-                          Usar como Atacado
+                          <span>Usar preço varejo</span>
+                          <span>{formatCurrency(scannedResult.varejo)}</span>
                         </motion.button>
                       </div>
 
                       <button 
                         onClick={() => setScannedResult(null)}
-                        className="w-full py-3 rounded-2xl bg-slate-100 text-slate-400 font-black text-[10px] uppercase tracking-widest hover:bg-slate-200 transition-colors"
+                        className="w-full py-3 rounded-2xl text-slate-400 font-bold text-[10px] uppercase tracking-widest hover:text-slate-600 transition-colors"
                       >
-                        Recapturar
+                        TIRAR OUTRA FOTO
                       </button>
                     </div>
                   </div>
