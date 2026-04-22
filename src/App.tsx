@@ -349,27 +349,17 @@ export default function App() {
 
       const rawLines = text.split('\n').map(l => l.trim()).filter(l => l.length > 2);
       
-      if (rawLines.length === 0) {
-        throw new Error('Não foi possível identificar o nome do produto. Tente centralizar a etiqueta no guia.');
+      if (rawLines.length < 2) {
+        throw new Error('Não foi possível capturar as linhas principais do produto. Tente aproximar mais.');
       }
 
-      // Heurística de Nome: Une as duas primeiras linhas se forem curtas ou se a segunda for um volume (ex: 250ml)
-      let productName = "";
-      const line1 = rawLines[0];
-      const line2 = rawLines[1] || "";
-      
-      if (line2.match(/\(\d+.*\)/) || (line2.length > 0 && line2.length < 10)) {
-        productName = `${line1} ${line2}`.trim();
-      } else {
-        productName = line1;
-      }
+      // REGRA FIXA: Nome é a junção da linha 1 e 2
+      const productName = `${rawLines[0]} ${rawLines[1]}`.trim();
 
-      if (!productName || productName.length < 3) {
-        throw new Error('Nome do produto detectado é inválido ou muito curto. Tente focar melhor.');
-      }
-
-      // Regex para encontrar preços
-      const priceRegex = /(?:R\$?\s*)?(\d+[,.]\d{2})/g;
+      // REGRA FIXA: Identificar todos os números no formato XX,XX ou XX.XX
+      // Pegamos apenas números que pareçam preços unitários (ex: entre 0.10 e 500.00) 
+      // para evitar códigos internos se possível, mas seguindo a regra de "maior/menor"
+      const priceRegex = /(\d+[,.]\d{2})/g;
       const foundPrices: number[] = [];
       let match;
       
@@ -381,20 +371,25 @@ export default function App() {
       }
 
       if (foundPrices.length === 0) {
-        throw new Error('Nenhum preço válido foi encontrado. Aproxime a câmera dos valores numéricos.');
+        throw new Error('Nenhum preço encontrado no padrão XX,XX.');
       }
 
-      // Ordena preços: O maior costuma ser Varejo, o menor Atacado
-      const sortedPrices = [...foundPrices].sort((a,b) => b-a);
+      // Ordena todos os preços encontrados
+      const allSorted = [...foundPrices].sort((a, b) => a - b);
+      
+      // REGRA FIXA: Menor valor = Atacado, Maior valor = Varejo
+      // Se houver apenas um valor, ele será ambos.
+      const atacado = allSorted[0];
+      const varejo = allSorted[allSorted.length - 1];
       
       const result = {
         name: productName,
-        prices: sortedPrices
+        prices: allSorted.length > 1 ? [varejo, atacado] : [varejo]
       };
 
       setScannedResult(result);
-      // Se houver dois preços, o padrão geralmente é o de varejo (maior)
-      setSelectedScannedPrice(result.prices[0]);
+      // Seleciona Varejo (o maior valor) por padrão
+      setSelectedScannedPrice(varejo);
     } catch (err) {
       console.error(err);
       setScannerError(err instanceof Error ? err.message : "Erro desconhecido ao processar o OCR local.");
@@ -987,7 +982,7 @@ export default function App() {
             >
               <div className="flex justify-between items-center px-6 mb-4">
                 <h3 className="text-white text-xs font-bold uppercase tracking-widest flex items-center gap-2">
-                  <Scan className="w-4 h-4 text-emerald-400" /> Leitor Inteligente
+                  <Scan className="w-4 h-4 text-emerald-400" /> Leitor de Etiqueta
                 </h3>
                 <button onClick={stopScanner} className="text-white/50 hover:text-white transition-colors">
                   <XCircle className="w-6 h-6" />
@@ -1054,7 +1049,7 @@ export default function App() {
                         <div className="bg-emerald-100 p-2 rounded-xl">
                           <Scan className="w-5 h-5 text-emerald-600" />
                         </div>
-                        <h4 className="text-slate-800 font-bold uppercase text-xs tracking-widest leading-none">Resultado OCR Local</h4>
+                        <h4 className="text-slate-800 font-bold uppercase text-xs tracking-widest leading-none">Dados Identificados</h4>
                       </div>
 
                       <div className="mb-4">
