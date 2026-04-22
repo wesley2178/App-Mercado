@@ -379,27 +379,32 @@ export default function App() {
         ? `${validLines[0]} ${validLines[1]}`.trim()
         : (validLines[0] || "");
 
-      // 2. EXTRAÇÃO DE PREÇOS (Regra: apenas entre 3 e 50 reais)
-      const priceRegex = /(\d+)\s*[,.]?\s*(\d{2})\b/;
+      // 2. EXTRAÇÃO DE PREÇOS (Regra: Ampliada para 0.90 a 99.00 para mais flexibilidade)
+      // O separador é opcional para capturar casos onde o OCR falha em ver a vírgula (ex: 499 vira 4.99)
+      const priceRegex = /(\d+)\s*[,.]?\s*(\d{2})\b/g;
       const foundPrices = new Set<number>();
 
-      const processItem = (itemText: string) => {
-        const match = itemText.match(priceRegex);
-        if (match) {
+      const processText = (itemText: string) => {
+        let match;
+        // Reinicia o lastIndex para garantir que o exec funcione corretamente
+        priceRegex.lastIndex = 0;
+        while ((match = priceRegex.exec(itemText)) !== null) {
           const val = parseFloat(`${match[1]}.${match[2]}`);
-          if (val >= 3.00 && val <= 50.00) {
+          // Filtro: Aceitamos de 0.90 a 99.00 para evitar erros com preços baixos ou promoções
+          if (val >= 0.90 && val <= 99.00) {
             foundPrices.add(val);
           }
         }
       };
 
-      ((data as any).words || []).forEach((w: any) => processItem(w.text));
-      ((data as any).lines || []).forEach((l: any) => processItem(l.text));
+      // Executa a busca em palavras e linhas
+      ((data as any).words || []).forEach((w: any) => processText(w.text));
+      ((data as any).lines || []).forEach((l: any) => processText(l.text));
 
       const pricesArray = Array.from(foundPrices).sort((a, b) => a - b);
 
       if (pricesArray.length === 0) {
-        throw new Error('Nenhum preço entre R$ 3,00 e R$ 50,00 foi encontrado.');
+        throw new Error('Nenhum preço válido (R$ 0,90 - R$ 99,00) foi identificado. Tente enquadrar melhor os números grandes.');
       }
 
       setScannedName(productName);
