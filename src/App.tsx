@@ -340,46 +340,62 @@ export default function App() {
 
     try {
       const worker = await createWorker('por');
-      const { data: { text } } = await worker.recognize(imageData);
+      const { data } = await worker.recognize(imageData);
       await worker.terminate();
+
+      const text = data.text;
+      const lines = (data as any).lines || [];
 
       if (!text || text.trim().length === 0) {
         throw new Error('Nenhum texto identificado. Tente aproximar mais a câmera ou melhorar a iluminação.');
       }
 
-      const rawLines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      // REGRA FIXA: Nome é a junção da linha 1 e 2
+      // Filtramos apenas linhas que realmente tenham texto substancial
+      const rawLines = lines.map(l => l.text.trim()).filter(l => l.length > 0);
       
       if (rawLines.length < 2) {
         throw new Error('Não foi possível identificar o nome e complemento do produto. Tente centralizar a etiqueta.');
       }
 
-      // REGRA FIXA: Nome é a junção da linha 1 e 2 (Exatamente como capturado)
       const productName = `${rawLines[0]} ${rawLines[1]}`.trim();
 
-      // REGRA FIXA: Identificar todos os números no formato XX,XX ou XX.XX
-      // Pegamos apenas números que pareçam preços unitários (ex: entre 0.10 e 500.00) 
-      // para evitar códigos internos se possível, mas seguindo a regra de "maior/menor"
-      const priceRegex = /(\d+[,.]\d{2})/g;
-      const foundPrices: number[] = [];
-      let match;
-      
-      while ((match = priceRegex.exec(text)) !== null) {
-        const p = parseFloat(match[1].replace(',', '.'));
-        if (!isNaN(p) && p > 0 && !foundPrices.includes(p)) {
-          foundPrices.push(p);
-        }
-      }
+      // REGRA FIXA POSICIONAL: 
+      // 1. Identificar números no formato XX,XX ou XX.XX
+      // 2. Armazenar o valor e sua posição horizontal (X)
+      const priceRegex = /(\d+[,.]\d{2})/;
+      const priceCandidates: { value: number, x: number }[] = [];
 
-      if (foundPrices.length === 0) {
+      // Varremos todas as palavras detectadas para encontrar preços e suas posições
+      ((data as any).words || []).forEach((word: any) => {
+        const match = word.text.match(priceRegex);
+        if (match) {
+          const val = parseFloat(match[1].replace(',', '.'));
+          if (!isNaN(val) && val > 0) {
+            // Pegamos o centro horizontal da palavra
+            const centerX = (word.bbox.x0 + word.bbox.x1) / 2;
+            
+            // Evita duplicatas próximas (mesmo preço detectado duas vezes por ruído)
+            const exists = priceCandidates.find(c => Math.abs(c.x - centerX) < 20);
+            if (!exists) {
+              priceCandidates.push({ value: val, x: centerX });
+            }
+          }
+        }
+      });
+
+      if (priceCandidates.length === 0) {
         throw new Error('Nenhum preço encontrado no padrão XX,XX.');
       }
 
-      // Ordena todos os preços encontrados
-      const allSorted = [...foundPrices].sort((a, b) => a - b);
+      // Ordenar apenas pela posição X (da esquerda para a direita)
+      const positionedSorted = [...priceCandidates].sort((a, b) => a.x - b.x);
       
-      // REGRA FIXA: Menor valor = Atacado, Maior valor = Varejo
-      const atacado = allSorted[0];
-      const varejo = allSorted[allSorted.length - 1];
+      // REGRA FIXA: 
+      // O número mais à ESQUERDA = Atacado
+      // O número mais à DIREITA = Varejo
+      const atacado = positionedSorted[0].value;
+      const varejo = positionedSorted[positionedSorted.length - 1].value;
       
       const result = {
         name: productName,
