@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useMemo, FormEvent, useEffect } from "react";
-import { Plus, Trash2, LayoutGrid, User, Settings, Pencil, Check, X, CheckCircle2, Clock, ChevronRight, ArrowLeft, Calendar, Box, Minus, Play, History, TrendingUp, TrendingDown, BarChart3, PieChart } from "lucide-react";
+import { useState, useMemo, FormEvent, useEffect, useRef } from "react";
+import { Plus, Trash2, LayoutGrid, User, Settings, Pencil, Check, X, CheckCircle2, Clock, ChevronRight, ArrowLeft, Calendar, Box, Minus, Play, History, TrendingUp, TrendingDown, BarChart3, PieChart, Camera, Scan, Sparkles, Loader2, XCircle } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { GoogleGenAI, Type } from "@google/genai";
 
 interface ShoppingItem {
   id: string;
@@ -49,6 +50,16 @@ export default function App() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editQuantity, setEditQuantity] = useState("");
   const [editPrice, setEditPrice] = useState("");
+
+  // Smart Add (Scanner) states
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [scannedResult, setScannedResult] = useState<{ name: string, prices: number[] } | null>(null);
+  const [selectedScannedPrice, setSelectedScannedPrice] = useState<number | null>(null);
+  const [scannerError, setScannerError] = useState<string | null>(null);
+
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
   // Load from localStorage on mount
   useEffect(() => {
@@ -260,6 +271,112 @@ export default function App() {
     setInventory((prev) => prev.filter((item) => item.id !== id));
   };
 
+  // --- Scanner Logic ---
+  const startScanner = async () => {
+    setIsScannerOpen(true);
+    setScannerError(null);
+    setScannedResult(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: "environment" } 
+      });
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+    } catch (err) {
+      console.error(err);
+      setScannerError("Não foi possível acessar a câmera. Verifique as permissões.");
+    }
+  };
+
+  const stopScanner = () => {
+    if (videoRef.current && videoRef.current.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      stream.getTracks().forEach(track => track.stop());
+    }
+    setIsScannerOpen(false);
+    setIsAnalyzing(false);
+    setScannedResult(null);
+  };
+
+  const captureAndAnalyze = async () => {
+    if (!videoRef.current || !canvasRef.current) return;
+
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const base64Image = canvas.toDataURL("image/jpeg").split(",")[1];
+
+    setIsAnalyzing(true);
+    setScannerError(null);
+
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [
+          {
+            parts: [
+              {
+                inlineData: {
+                  mimeType: "image/jpeg",
+                  data: base64Image,
+                },
+              },
+              {
+                text: "Analyze this image of a product label. Identify the product name and a list of all possible prices found (e.g., unit price, wholesale price, promotional price). Return a JSON object with the following structure: { \"name\": \"string\", \"prices\": [number] }. Ensure prices are numbers and only include numeric values.",
+              }
+            ],
+          },
+        ],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              name: { type: Type.STRING },
+              prices: { 
+                type: Type.ARRAY,
+                items: { type: Type.NUMBER }
+              }
+            },
+            required: ["name", "prices"]
+          }
+        }
+      });
+
+      const result = JSON.parse(response.text);
+      setScannedResult(result);
+      if (result.prices.length > 0) {
+        setSelectedScannedPrice(result.prices[0]);
+      }
+    } catch (err) {
+      console.error(err);
+      setScannerError("Ocorreu um erro ao analisar a imagem. Tente novamente.");
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const confirmScannedItem = () => {
+    if (!scannedResult || selectedScannedPrice === null) return;
+
+    const newItem: ShoppingItem = {
+      id: crypto.randomUUID(),
+      name: scannedResult.name,
+      quantity: 1,
+      price: selectedScannedPrice,
+    };
+
+    setItems((prev) => [newItem, ...prev]);
+    stopScanner();
+  };
+
   const formatCurrency = (value: number) => {
     return new Intl.NumberFormat("pt-BR", {
       style: "currency",
@@ -392,13 +509,23 @@ export default function App() {
                           />
                         </div>
                       </div>
-                      <motion.button
-                        whileTap={{ scale: 0.98 }}
-                        type="submit"
-                        className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-3 rounded-xl transition-colors shadow-lg shadow-emerald-200/50 flex items-center justify-center gap-2"
-                      >
-                        <Plus className="w-5 h-5 stroke-[3]" /> Adicionar
-                      </motion.button>
+                      <div className="flex gap-2">
+                        <motion.button
+                          whileTap={{ scale: 0.98 }}
+                          type="submit"
+                          className="flex-[2] bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-3 rounded-xl transition-colors shadow-lg shadow-emerald-200/50 flex items-center justify-center gap-2"
+                        >
+                          <Plus className="w-5 h-5 stroke-[3]" /> Adicionar
+                        </motion.button>
+                        <motion.button
+                          whileTap={{ scale: 0.98 }}
+                          type="button"
+                          onClick={startScanner}
+                          className="flex-1 bg-slate-800 hover:bg-black text-white font-bold py-3 rounded-xl transition-colors shadow-lg shadow-slate-200/50 flex items-center justify-center gap-2 text-[10px] uppercase tracking-tighter"
+                        >
+                          <Camera className="w-5 h-5" /> Escanear
+                        </motion.button>
+                      </div>
                     </form>
                   </div>
                 </div>
@@ -807,6 +934,122 @@ export default function App() {
             <span className="text-[7px] font-black uppercase tracking-tighter">Opções</span>
           </button>
         </nav>
+
+        {/* Scanner Overlay */}
+        <AnimatePresence>
+          {isScannerOpen && (
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-black z-50 flex flex-col pt-12"
+            >
+              <div className="flex justify-between items-center px-6 mb-4">
+                <h3 className="text-white text-xs font-bold uppercase tracking-widest flex items-center gap-2">
+                  <Scan className="w-4 h-4 text-emerald-400" /> Leitor Inteligente
+                </h3>
+                <button onClick={stopScanner} className="text-white/50 hover:text-white transition-colors">
+                  <XCircle className="w-6 h-6" />
+                </button>
+              </div>
+
+              <div className="flex-1 relative bg-slate-900 mx-4 rounded-3xl overflow-hidden border border-white/10 shadow-inner">
+                {!scannedResult ? (
+                  <>
+                    <video 
+                      ref={videoRef} 
+                      autoPlay 
+                      playsInline 
+                      className="w-full h-full object-cover"
+                    />
+                    {/* Scanner Guides */}
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <div className="w-64 h-40 border-2 border-dashed border-emerald-400/50 rounded-2xl flex items-center justify-center">
+                        <span className="text-white/30 text-[10px] font-black uppercase tracking-widest text-center px-8">Aponte para a etiqueta do produto</span>
+                      </div>
+                    </div>
+
+                    <div className="absolute bottom-8 left-1/2 -translate-x-1/2">
+                      <motion.button
+                        whileTap={{ scale: 0.9 }}
+                        disabled={isAnalyzing}
+                        onClick={captureAndAnalyze}
+                        className={`w-16 h-16 rounded-full border-4 flex items-center justify-center transition-all ${isAnalyzing ? 'border-slate-700 bg-slate-800' : 'border-white bg-emerald-500'}`}
+                      >
+                        {isAnalyzing ? (
+                          <Loader2 className="w-8 h-8 text-white animate-spin" />
+                        ) : (
+                          <div className="w-12 h-12 rounded-full bg-white/20" />
+                        )}
+                      </motion.button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="absolute inset-0 bg-slate-900 p-8 flex flex-col justify-center">
+                    <div className="bg-white rounded-3xl p-6 shadow-2xl">
+                      <div className="flex items-center gap-2 mb-4">
+                        <div className="bg-emerald-100 p-2 rounded-xl">
+                          <Sparkles className="w-5 h-5 text-emerald-600" />
+                        </div>
+                        <h4 className="text-slate-800 font-bold uppercase text-xs tracking-widest leading-none">Resultado da IA</h4>
+                      </div>
+
+                      <div className="mb-6">
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Produto Identificado</label>
+                        <p className="text-xl font-black text-slate-800 leading-tight capitalize">{scannedResult.name}</p>
+                      </div>
+
+                      <div className="mb-8">
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Preços Encontrados</label>
+                        <div className="flex flex-wrap gap-2 mt-2">
+                          {scannedResult.prices.map((p, i) => (
+                            <button
+                              key={i}
+                              onClick={() => setSelectedScannedPrice(p)}
+                              className={`px-4 py-2 rounded-xl border-2 transition-all font-black text-sm ${selectedScannedPrice === p ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-100 bg-slate-50 text-slate-400'}`}
+                            >
+                              {formatCurrency(p)}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="flex gap-2">
+                         <button 
+                          onClick={() => setScannedResult(null)}
+                          className="flex-1 py-4 rounded-2xl bg-slate-100 text-slate-400 font-black text-xs uppercase tracking-widest hover:bg-slate-200 transition-colors"
+                        >
+                          Recapturar
+                        </button>
+                        <motion.button 
+                          whileTap={{ scale: 0.98 }}
+                          onClick={confirmScannedItem}
+                          className="flex-[2] py-4 rounded-2xl bg-emerald-500 text-white font-black text-xs uppercase tracking-widest shadow-lg shadow-emerald-200 hover:bg-emerald-600 transition-colors"
+                        >
+                          Confirmar Item
+                        </motion.button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                
+                {scannerError && !isAnalyzing && (
+                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-red-500 text-white p-4 rounded-2xl text-center w-64 shadow-xl">
+                    <p className="text-[10px] font-black uppercase mb-2">Erro</p>
+                    <p className="text-xs font-medium leading-tight">{scannerError}</p>
+                    <button onClick={startScanner} className="mt-4 bg-white/20 hover:bg-white/30 px-4 py-2 rounded-xl text-[10px] font-black uppercase transition-colors duration-300">Tentar Novamente</button>
+                  </div>
+                )}
+              </div>
+
+              <div className="p-8 text-center">
+                <p className="text-white/30 text-[9px] font-bold uppercase tracking-widest">IA treinada para ler preços e nomes</p>
+              </div>
+
+              <canvas ref={canvasRef} className="hidden" />
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );

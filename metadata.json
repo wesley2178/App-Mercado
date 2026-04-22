@@ -1,6 +1,6 @@
 {
   "name": "Minha Compra",
   "description": "Uma lista de compras moderna e minimalista para acompanhar seus gastos em tempo real.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": ["camera"],
   "majorCapabilities": []
 }
