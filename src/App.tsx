@@ -4,9 +4,8 @@
  */
 
 import { useState, useMemo, FormEvent, useEffect, useRef } from "react";
-import { Plus, Trash2, LayoutGrid, User, Settings, Pencil, Check, X, CheckCircle2, Clock, ChevronRight, ArrowLeft, Calendar, Box, Minus, Play, History, TrendingUp, TrendingDown, BarChart3, PieChart, Camera, Scan, Sparkles, Loader2, XCircle } from "lucide-react";
+import { Plus, Trash2, LayoutGrid, User, Settings, Pencil, Check, X, CheckCircle2, Clock, ChevronRight, ArrowLeft, Calendar, Box, Minus, Play, History, TrendingUp, TrendingDown, BarChart3, PieChart, Camera, Scan, Sparkles, Loader2, XCircle, TrendingUp as TrendingUpIcon, TrendingDown as TrendingDownIcon } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { GoogleGenAI, Type } from "@google/genai";
 
 interface ShoppingItem {
   id: string;
@@ -277,9 +276,10 @@ export default function App() {
     setScannerError(null);
     setScannedResult(null);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: "environment" } 
-      });
+      const constraints = { 
+        video: { facingMode: { ideal: "environment" } } 
+      };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
       }
@@ -316,9 +316,12 @@ export default function App() {
     setScannerError(null);
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+      const apiKey = process.env.GEMINI_API_KEY;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+      
+      const prompt = "Analyze this image of a product label. Identify the product name and a list of all possible prices found (e.g., unit price, wholesale price, promotional price). Return a JSON object with the following structure: { \"name\": \"string\", \"prices\": [number] }. Ensure prices are numbers and only include numeric values.";
+
+      const body = {
         contents: [
           {
             parts: [
@@ -329,30 +332,36 @@ export default function App() {
                 },
               },
               {
-                text: "Analyze this image of a product label. Identify the product name and a list of all possible prices found (e.g., unit price, wholesale price, promotional price). Return a JSON object with the following structure: { \"name\": \"string\", \"prices\": [number] }. Ensure prices are numbers and only include numeric values.",
+                text: prompt,
               }
             ],
           },
         ],
-        config: {
+        generationConfig: {
           responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              name: { type: Type.STRING },
-              prices: { 
-                type: Type.ARRAY,
-                items: { type: Type.NUMBER }
-              }
-            },
-            required: ["name", "prices"]
-          }
         }
+      };
+
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
       });
 
-      const result = JSON.parse(response.text);
+      if (!res.ok) {
+        throw new Error(`Erro na API Gemini: ${res.statusText}`);
+      }
+
+      const data = await res.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      
+      if (!text) {
+        throw new Error('A IA não retornou nenhum dado válido.');
+      }
+
+      const result = JSON.parse(text);
       setScannedResult(result);
-      if (result.prices.length > 0) {
+      if (result.prices && result.prices.length > 0) {
         setSelectedScannedPrice(result.prices[0]);
       }
     } catch (err) {
