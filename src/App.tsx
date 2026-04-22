@@ -316,23 +316,24 @@ export default function App() {
     setScannerError(null);
 
     try {
-      const apiKey = process.env.GEMINI_API_KEY;
+      const apiKey = (import.meta as any).env.VITE_GEMINI_API_KEY;
       
       if (!apiKey || apiKey === "undefined") {
         throw new Error("A chave da API Gemini não foi configurada. Verifique as configurações do projeto.");
       }
 
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+      // Using /v1/ for stability, and gemini-1.5-flash which is widely compatible with vision
+      const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
       
-      const prompt = "Identify the product name and its prices from this label. Return ONLY a valid JSON object: { \"name\": \"product name\", \"prices\": [9.99, 10.50] }. If no prices are found, return an empty array for prices.";
+      const prompt = "Analyze this image of a product label. Identify the product name and its prices. Return ONLY a valid JSON object: { \"name\": \"product name\", \"prices\": [number] }. Example: { \"name\": \"Leite Integral 1L\", \"prices\": [4.99] }. If multiple prices are found (like wholesale vs retail), include all of them in the array.";
 
       const body = {
         contents: [
           {
             parts: [
               {
-                inlineData: {
-                  mimeType: "image/jpeg",
+                inline_data: {
+                  mime_type: "image/jpeg",
                   data: base64Image,
                 },
               },
