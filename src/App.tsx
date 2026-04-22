@@ -274,10 +274,46 @@ export default function App() {
   };
 
   // --- Scanner Logic ---
+  useEffect(() => {
+    let currentStream: MediaStream | null = null;
+
+    const initCamera = async () => {
+      if (isScannerOpen) {
+        try {
+          const constraints = { 
+            video: { 
+              facingMode: { ideal: "environment" },
+              width: { ideal: 1280 },
+              height: { ideal: 720 }
+            } 
+          };
+          const stream = await navigator.mediaDevices.getUserMedia(constraints);
+          currentStream = stream;
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+          }
+        } catch (err) {
+          console.error("Erro câmera:", err);
+          setScannerError("Não foi possível acessar a câmera. Tente recarregar a página ou verifique as permissões do navegador.");
+        }
+      }
+    };
+
+    initCamera();
+
+    return () => {
+      if (currentStream) {
+        currentStream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [isScannerOpen]);
+
   const startScanner = async () => {
     setIsScannerOpen(true);
     setScannerError(null);
     setScannedResult(null);
+    setScannedName("");
+    setSelectedScannedPrice(null);
 
     // Inicializa o worker em background se ainda não existir
     if (!workerRef.current) {
@@ -288,35 +324,21 @@ export default function App() {
         console.error("Erro ao inicializar OCR:", e);
       }
     }
-
-    try {
-      const constraints = { 
-        video: { facingMode: { ideal: "environment" } } 
-      };
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
-    } catch (err) {
-      console.error(err);
-      setScannerError("Não foi possível acessar a câmera. Verifique as permissões.");
-    }
   };
 
   const stopScanner = async () => {
-    if (videoRef.current && videoRef.current.srcObject) {
-      const stream = videoRef.current.srcObject as MediaStream;
-      stream.getTracks().forEach(track => track.stop());
-    }
-    
     setIsScannerOpen(false);
     setIsAnalyzing(false);
     setScannedResult(null);
 
     // Encerra o worker para liberar memória
     if (workerRef.current) {
-      await workerRef.current.terminate();
-      workerRef.current = null;
+      try {
+        await workerRef.current.terminate();
+        workerRef.current = null;
+      } catch (e) {
+        console.error("Erro ao fechar worker:", e);
+      }
     }
   };
 
