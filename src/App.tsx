@@ -317,9 +317,14 @@ export default function App() {
 
     try {
       const apiKey = process.env.GEMINI_API_KEY;
+      
+      if (!apiKey || apiKey === "undefined") {
+        throw new Error("A chave da API Gemini não foi configurada. Verifique as configurações do projeto.");
+      }
+
       const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
       
-      const prompt = "Analyze this image of a product label. Identify the product name and a list of all possible prices found (e.g., unit price, wholesale price, promotional price). Return a JSON object with the following structure: { \"name\": \"string\", \"prices\": [number] }. Ensure prices are numbers and only include numeric values.";
+      const prompt = "Identify the product name and its prices from this label. Return ONLY a valid JSON object: { \"name\": \"product name\", \"prices\": [9.99, 10.50] }. If no prices are found, return an empty array for prices.";
 
       const body = {
         contents: [
@@ -339,6 +344,7 @@ export default function App() {
         ],
         generationConfig: {
           responseMimeType: "application/json",
+          temperature: 0.1,
         }
       };
 
@@ -349,24 +355,32 @@ export default function App() {
       });
 
       if (!res.ok) {
-        throw new Error(`Erro na API Gemini: ${res.statusText}`);
+        const errorData = await res.json().catch(() => ({}));
+        console.error("Gemini API Error:", errorData);
+        throw new Error(`Erro na API (${res.status}): ${errorData.error?.message || res.statusText}`);
       }
 
       const data = await res.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      let text = data.candidates?.[0]?.content?.parts?.[0]?.text;
       
       if (!text) {
-        throw new Error('A IA não retornou nenhum dado válido.');
+        throw new Error('A imagem não pôde ser analisada. Tente aproximar mais a câmera.');
       }
+
+      // Cleanup markdown if AI returns it
+      text = text.replace(/```json/g, "").replace(/```/g, "").trim();
 
       const result = JSON.parse(text);
       setScannedResult(result);
-      if (result.prices && result.prices.length > 0) {
+      if (result.prices && Array.isArray(result.prices) && result.prices.length > 0) {
         setSelectedScannedPrice(result.prices[0]);
+      } else {
+        setScannedResult({ ...result, prices: [0] });
+        setSelectedScannedPrice(0);
       }
     } catch (err) {
       console.error(err);
-      setScannerError("Ocorreu um erro ao analisar a imagem. Tente novamente.");
+      setScannerError(err instanceof Error ? err.message : "Erro desconhecido ao processar a imagem.");
     } finally {
       setIsAnalyzing(false);
     }
