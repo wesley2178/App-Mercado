@@ -316,10 +316,10 @@ export default function App() {
     setScannerError(null);
 
     try {
-      const apiKey = (import.meta as any).env.VITE_GEMINI_API_KEY;
+      const apiKey = (import.meta as any).env?.VITE_GEMINI_API_KEY || (__GEMINI_API_KEY__ as any);
       
-      if (!apiKey || apiKey === "undefined") {
-        throw new Error("A chave da API Gemini não foi configurada. Verifique as configurações do projeto.");
+      if (!apiKey || apiKey === "undefined" || apiKey === "MY_GEMINI_API_KEY" || apiKey === "") {
+        throw new Error("A chave da API Gemini não foi encontrada. Verifique se configurou o segredo GEMINI_API_KEY no painel Settings do AI Studio.");
       }
 
       // Using /v1/ for stability, and gemini-1.5-flash which is widely compatible with vision
@@ -349,7 +349,7 @@ export default function App() {
         }
       };
 
-      const res = await fetch(url, {
+      const res = await window.fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
