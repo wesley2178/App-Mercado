@@ -349,17 +349,23 @@ export default function App() {
 
       const rawLines = text.split('\n').map(l => l.trim()).filter(l => l.length > 2);
       
+      if (rawLines.length === 0) {
+        throw new Error('Não foi possível identificar o nome do produto. Tente centralizar a etiqueta no guia.');
+      }
+
       // Heurística de Nome: Une as duas primeiras linhas se forem curtas ou se a segunda for um volume (ex: 250ml)
-      let productName = "Produto Escaneado";
-      if (rawLines.length > 0) {
-        const line1 = rawLines[0];
-        const line2 = rawLines[1] || "";
-        
-        if (line2.match(/\(\d+.*\)/) || line2.length < 10) {
-          productName = `${line1} ${line2}`.trim();
-        } else {
-          productName = line1;
-        }
+      let productName = "";
+      const line1 = rawLines[0];
+      const line2 = rawLines[1] || "";
+      
+      if (line2.match(/\(\d+.*\)/) || (line2.length > 0 && line2.length < 10)) {
+        productName = `${line1} ${line2}`.trim();
+      } else {
+        productName = line1;
+      }
+
+      if (!productName || productName.length < 3) {
+        throw new Error('Nome do produto detectado é inválido ou muito curto. Tente focar melhor.');
       }
 
       // Regex para encontrar preços
@@ -374,13 +380,16 @@ export default function App() {
         }
       }
 
+      if (foundPrices.length === 0) {
+        throw new Error('Nenhum preço válido foi encontrado. Aproxime a câmera dos valores numéricos.');
+      }
+
       // Ordena preços: O maior costuma ser Varejo, o menor Atacado
-      // Em muitas etiquetas de atacado, o preço maior é o unitário (varejo)
       const sortedPrices = [...foundPrices].sort((a,b) => b-a);
       
       const result = {
         name: productName,
-        prices: sortedPrices.length > 0 ? sortedPrices : [0]
+        prices: sortedPrices
       };
 
       setScannedResult(result);
@@ -994,17 +1003,31 @@ export default function App() {
                       playsInline 
                       className="w-full h-full object-cover"
                     />
-                    {/* Scanner Guides */}
-                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                      <div className="w-72 h-32 border-4 border-emerald-400 rounded-3xl flex items-center justify-center relative bg-emerald-400/5">
-                        <div className="absolute -top-1 -left-1 w-8 h-8 border-t-4 border-l-4 border-white rounded-tl-xl" />
-                        <div className="absolute -top-1 -right-1 w-8 h-8 border-t-4 border-r-4 border-white rounded-tr-xl" />
-                        <div className="absolute -bottom-1 -left-1 w-8 h-8 border-b-4 border-l-4 border-white rounded-bl-xl" />
-                        <div className="absolute -bottom-1 -right-1 w-8 h-8 border-b-4 border-r-4 border-white rounded-br-xl" />
-                        
-                        <div className="flex flex-col items-center gap-1">
-                          <Scan className="w-6 h-6 text-emerald-400 animate-pulse" />
-                          <span className="text-white text-[9px] font-black uppercase tracking-widest text-center px-4 drop-shadow-md">Alinhe a etiqueta aqui</span>
+                    {/* Scanner Guides with darkened background */}
+                    <div className="absolute inset-0 pointer-events-none">
+                      <div className="absolute inset-0 bg-black/40" style={{ clipPath: 'polygon(0% 0%, 0% 100%, 10% 100%, 10% 30%, 90% 30%, 90% 70%, 10% 70%, 10% 100%, 100% 100%, 100% 0%)' }} />
+                      
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="w-72 h-40 border border-emerald-400/30 rounded-3xl flex items-center justify-center relative bg-transparent overflow-hidden">
+                          {/* Highlighted Corners */}
+                          <div className="absolute top-0 left-0 w-10 h-10 border-t-4 border-l-4 border-emerald-400 rounded-tl-2xl" />
+                          <div className="absolute top-0 right-0 w-10 h-10 border-t-4 border-r-4 border-emerald-400 rounded-tr-2xl" />
+                          <div className="absolute bottom-0 left-0 w-10 h-10 border-b-4 border-l-4 border-emerald-400 rounded-bl-2xl" />
+                          <div className="absolute bottom-0 right-0 w-10 h-10 border-b-4 border-r-4 border-emerald-400 rounded-br-2xl" />
+                          
+                          {/* Animated Scanning Line */}
+                          <motion.div 
+                            animate={{ top: ['10%', '90%', '10%'] }}
+                            transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+                            className="absolute left-4 right-4 h-0.5 bg-emerald-400/50 shadow-[0_0_15px_rgba(52,211,153,0.8)] z-10"
+                          />
+
+                          <div className="flex flex-col items-center gap-1 z-20">
+                            <div className="bg-emerald-500/20 p-2 rounded-full backdrop-blur-sm">
+                              <Scan className="w-6 h-6 text-emerald-400 animate-pulse" />
+                            </div>
+                            <span className="text-white text-[10px] font-black uppercase tracking-widest text-center px-4 drop-shadow-lg">Posicione a etiqueta</span>
+                          </div>
                         </div>
                       </div>
                     </div>
