@@ -6,6 +6,7 @@
 import { useState, useMemo, FormEvent, useEffect, useRef } from "react";
 import { Plus, Trash2, LayoutGrid, User, Settings, Pencil, Check, X, CheckCircle2, Clock, ChevronRight, ArrowLeft, Calendar, Box, Minus, Play, History, TrendingUp, TrendingDown, BarChart3, PieChart, Camera, Scan, Sparkles, Loader2, XCircle, TrendingUp as TrendingUpIcon, TrendingDown as TrendingDownIcon } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { createWorker } from "tesseract.js";
 
 interface ShoppingItem {
   id: string;
@@ -310,89 +311,61 @@ export default function App() {
     if (!ctx) return;
 
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const base64Image = canvas.toDataURL("image/jpeg").split(",")[1];
+    const imageData = canvas.toDataURL("image/jpeg");
 
     setIsAnalyzing(true);
     setScannerError(null);
 
     try {
-      const apiKey = (import.meta as any).env?.VITE_GEMINI_API_KEY || (__GEMINI_API_KEY__ as any);
-      
-      if (!apiKey || apiKey === "undefined" || apiKey === "MY_GEMINI_API_KEY" || apiKey === "") {
-        throw new Error("A chave da API Gemini não foi encontrada. Verifique se configurou o segredo GEMINI_API_KEY no painel Settings do AI Studio.");
+      const worker = await createWorker('por');
+      const { data: { text } } = await worker.recognize(imageData);
+      await worker.terminate();
+
+      if (!text || text.trim().length === 0) {
+        throw new Error('Nenhum texto identificado. Tente aproximar mais a câmera ou melhorar a iluminação.');
       }
 
-      // Using /v1/ for stability, and gemini-1.5-flash which is widely compatible with vision
-      const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+      // Procura por preços e nome do produto
+      const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 2);
       
-      const prompt = "Analyze this image of a product label. Identify the product name and its prices. Return ONLY a valid JSON object: { \"name\": \"product name\", \"prices\": [number] }. Example: { \"name\": \"Leite Integral 1L\", \"prices\": [4.99] }. If multiple prices are found (like wholesale vs retail), include all of them in the array.";
+      // Nome do produto: primeira linha substancial ou a mais longa entre as 3 primeiras
+      const candidateLines = lines.slice(0, 3);
+      const productName = candidateLines.sort((a,b) => b.length - a.length)[0] || "Produto Escaneado";
 
-      const body = {
-        contents: [
-          {
-            parts: [
-              {
-                inline_data: {
-                  mime_type: "image/jpeg",
-                  data: base64Image,
-                },
-              },
-              {
-                text: prompt,
-              }
-            ],
-          },
-        ],
-        generationConfig: {
-          responseMimeType: "application/json",
-          temperature: 0.1,
+      // Regex para encontrar preços (R$ ou apenas números com vírgula)
+      const priceRegex = /(?:R\$?\s*)?(\d+[,.]\d{2})/g;
+      const prices: number[] = [];
+      let match;
+      
+      while ((match = priceRegex.exec(text)) !== null) {
+        const p = parseFloat(match[1].replace(',', '.'));
+        if (!isNaN(p) && p > 0 && !prices.includes(p)) {
+          prices.push(p);
         }
+      }
+
+      const result = {
+        name: productName,
+        prices: prices.length > 0 ? prices.sort((a,b) => b-a) : [0]
       };
 
-      const res = await window.fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
-
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        console.error("Gemini API Error:", errorData);
-        throw new Error(`Erro na API (${res.status}): ${errorData.error?.message || res.statusText}`);
-      }
-
-      const data = await res.json();
-      let text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      
-      if (!text) {
-        throw new Error('A imagem não pôde ser analisada. Tente aproximar mais a câmera.');
-      }
-
-      // Cleanup markdown if AI returns it
-      text = text.replace(/```json/g, "").replace(/```/g, "").trim();
-
-      const result = JSON.parse(text);
       setScannedResult(result);
-      if (result.prices && Array.isArray(result.prices) && result.prices.length > 0) {
-        setSelectedScannedPrice(result.prices[0]);
-      } else {
-        setScannedResult({ ...result, prices: [0] });
-        setSelectedScannedPrice(0);
-      }
+      setSelectedScannedPrice(result.prices[0]);
     } catch (err) {
       console.error(err);
-      setScannerError(err instanceof Error ? err.message : "Erro desconhecido ao processar a imagem.");
+      setScannerError(err instanceof Error ? err.message : "Erro desconhecido ao processar o OCR local.");
     } finally {
       setIsAnalyzing(false);
     }
   };
 
-  const confirmScannedItem = () => {
+  const addItemFromScanner = (type: 'unit' | 'wholesale') => {
     if (!scannedResult || selectedScannedPrice === null) return;
 
+    const suffix = type === 'wholesale' ? ' (Atacado)' : '';
     const newItem: ShoppingItem = {
       id: crypto.randomUUID(),
-      name: scannedResult.name,
+      name: `${scannedResult.name}${suffix}`,
       quantity: 1,
       price: selectedScannedPrice,
     };
@@ -1013,24 +986,24 @@ export default function App() {
                     <div className="bg-white rounded-3xl p-6 shadow-2xl">
                       <div className="flex items-center gap-2 mb-4">
                         <div className="bg-emerald-100 p-2 rounded-xl">
-                          <Sparkles className="w-5 h-5 text-emerald-600" />
+                          <Scan className="w-5 h-5 text-emerald-600" />
                         </div>
-                        <h4 className="text-slate-800 font-bold uppercase text-xs tracking-widest leading-none">Resultado da IA</h4>
+                        <h4 className="text-slate-800 font-bold uppercase text-xs tracking-widest leading-none">Resultado OCR Local</h4>
+                      </div>
+
+                      <div className="mb-4">
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Produto Detectado</label>
+                        <p className="text-lg font-black text-slate-800 leading-tight capitalize">{scannedResult.name}</p>
                       </div>
 
                       <div className="mb-6">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Produto Identificado</label>
-                        <p className="text-xl font-black text-slate-800 leading-tight capitalize">{scannedResult.name}</p>
-                      </div>
-
-                      <div className="mb-8">
                         <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Preços Encontrados</label>
                         <div className="flex flex-wrap gap-2 mt-2">
                           {scannedResult.prices.map((p, i) => (
                             <button
                               key={i}
                               onClick={() => setSelectedScannedPrice(p)}
-                              className={`px-4 py-2 rounded-xl border-2 transition-all font-black text-sm ${selectedScannedPrice === p ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-100 bg-slate-50 text-slate-400'}`}
+                              className={`px-3 py-2 rounded-xl border-2 transition-all font-black text-sm ${selectedScannedPrice === p ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-100 bg-slate-50 text-slate-400'}`}
                             >
                               {formatCurrency(p)}
                             </button>
@@ -1038,21 +1011,29 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div className="flex gap-2">
-                         <button 
-                          onClick={() => setScannedResult(null)}
-                          className="flex-1 py-4 rounded-2xl bg-slate-100 text-slate-400 font-black text-xs uppercase tracking-widest hover:bg-slate-200 transition-colors"
-                        >
-                          Recapturar
-                        </button>
+                      <div className="grid grid-cols-2 gap-2 mb-4">
                         <motion.button 
-                          whileTap={{ scale: 0.98 }}
-                          onClick={confirmScannedItem}
-                          className="flex-[2] py-4 rounded-2xl bg-emerald-500 text-white font-black text-xs uppercase tracking-widest shadow-lg shadow-emerald-200 hover:bg-emerald-600 transition-colors"
+                          whileTap={{ scale: 0.95 }}
+                          onClick={() => addItemFromScanner('unit')}
+                          className="py-3 px-2 rounded-2xl bg-emerald-500 text-white font-black text-[10px] uppercase tracking-tighter shadow-lg shadow-emerald-200 hover:bg-emerald-600 transition-colors"
                         >
-                          Confirmar Item
+                          Usar como Unitário
+                        </motion.button>
+                        <motion.button 
+                          whileTap={{ scale: 0.95 }}
+                          onClick={() => addItemFromScanner('wholesale')}
+                          className="py-3 px-2 rounded-2xl bg-slate-800 text-white font-black text-[10px] uppercase tracking-tighter shadow-lg shadow-slate-200 hover:bg-black transition-colors"
+                        >
+                          Usar como Atacado
                         </motion.button>
                       </div>
+
+                      <button 
+                        onClick={() => setScannedResult(null)}
+                        className="w-full py-3 rounded-2xl bg-slate-100 text-slate-400 font-black text-[10px] uppercase tracking-widest hover:bg-slate-200 transition-colors"
+                      >
+                        Recapturar
+                      </button>
                     </div>
                   </div>
                 )}
@@ -1067,7 +1048,7 @@ export default function App() {
               </div>
 
               <div className="p-8 text-center">
-                <p className="text-white/30 text-[9px] font-bold uppercase tracking-widest">IA treinada para ler preços e nomes</p>
+                <p className="text-white/30 text-[9px] font-bold uppercase tracking-widest">Processamento local de imagem via OCR</p>
               </div>
 
               <canvas ref={canvasRef} className="hidden" />
