@@ -305,13 +305,35 @@ export default function App() {
 
     const canvas = canvasRef.current;
     const video = videoRef.current;
+    
+    // Configura o canvas para o tamanho real do vídeo
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    // Desenha o vídeo no canvas
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const imageData = canvas.toDataURL("image/jpeg");
+
+    // Crop heurístico: foca no centro (onde está o guia visual)
+    // O guia tem aprox 64/container_width e 40/container_height
+    // Vamos pegar os 60% centrais para evitar ruído de bordas
+    const cropWidth = canvas.width * 0.8;
+    const cropHeight = canvas.height * 0.5;
+    const cropX = (canvas.width - cropWidth) / 2;
+    const cropY = (canvas.height - cropHeight) / 2;
+
+    const cropCanvas = document.createElement('canvas');
+    cropCanvas.width = cropWidth;
+    cropCanvas.height = cropHeight;
+    const cropCtx = cropCanvas.getContext('2d');
+    if (cropCtx) {
+      // Aplica um filtro de contraste para melhorar o OCR
+      cropCtx.filter = 'contrast(1.5) grayscale(1)';
+      cropCtx.drawImage(canvas, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+    }
+
+    const imageData = cropCanvas.toDataURL("image/jpeg", 0.9);
 
     setIsAnalyzing(true);
     setScannerError(null);
@@ -325,31 +347,44 @@ export default function App() {
         throw new Error('Nenhum texto identificado. Tente aproximar mais a câmera ou melhorar a iluminação.');
       }
 
-      // Procura por preços e nome do produto
-      const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 2);
+      const rawLines = text.split('\n').map(l => l.trim()).filter(l => l.length > 2);
       
-      // Nome do produto: primeira linha substancial ou a mais longa entre as 3 primeiras
-      const candidateLines = lines.slice(0, 3);
-      const productName = candidateLines.sort((a,b) => b.length - a.length)[0] || "Produto Escaneado";
+      // Heurística de Nome: Une as duas primeiras linhas se forem curtas ou se a segunda for um volume (ex: 250ml)
+      let productName = "Produto Escaneado";
+      if (rawLines.length > 0) {
+        const line1 = rawLines[0];
+        const line2 = rawLines[1] || "";
+        
+        if (line2.match(/\(\d+.*\)/) || line2.length < 10) {
+          productName = `${line1} ${line2}`.trim();
+        } else {
+          productName = line1;
+        }
+      }
 
-      // Regex para encontrar preços (R$ ou apenas números com vírgula)
+      // Regex para encontrar preços
       const priceRegex = /(?:R\$?\s*)?(\d+[,.]\d{2})/g;
-      const prices: number[] = [];
+      const foundPrices: number[] = [];
       let match;
       
       while ((match = priceRegex.exec(text)) !== null) {
         const p = parseFloat(match[1].replace(',', '.'));
-        if (!isNaN(p) && p > 0 && !prices.includes(p)) {
-          prices.push(p);
+        if (!isNaN(p) && p > 0 && !foundPrices.includes(p)) {
+          foundPrices.push(p);
         }
       }
 
+      // Ordena preços: O maior costuma ser Varejo, o menor Atacado
+      // Em muitas etiquetas de atacado, o preço maior é o unitário (varejo)
+      const sortedPrices = [...foundPrices].sort((a,b) => b-a);
+      
       const result = {
         name: productName,
-        prices: prices.length > 0 ? prices.sort((a,b) => b-a) : [0]
+        prices: sortedPrices.length > 0 ? sortedPrices : [0]
       };
 
       setScannedResult(result);
+      // Se houver dois preços, o padrão geralmente é o de varejo (maior)
       setSelectedScannedPrice(result.prices[0]);
     } catch (err) {
       console.error(err);
@@ -960,9 +995,17 @@ export default function App() {
                       className="w-full h-full object-cover"
                     />
                     {/* Scanner Guides */}
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="w-64 h-40 border-2 border-dashed border-emerald-400/50 rounded-2xl flex items-center justify-center">
-                        <span className="text-white/30 text-[10px] font-black uppercase tracking-widest text-center px-8">Aponte para a etiqueta do produto</span>
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <div className="w-72 h-32 border-4 border-emerald-400 rounded-3xl flex items-center justify-center relative bg-emerald-400/5">
+                        <div className="absolute -top-1 -left-1 w-8 h-8 border-t-4 border-l-4 border-white rounded-tl-xl" />
+                        <div className="absolute -top-1 -right-1 w-8 h-8 border-t-4 border-r-4 border-white rounded-tr-xl" />
+                        <div className="absolute -bottom-1 -left-1 w-8 h-8 border-b-4 border-l-4 border-white rounded-bl-xl" />
+                        <div className="absolute -bottom-1 -right-1 w-8 h-8 border-b-4 border-r-4 border-white rounded-br-xl" />
+                        
+                        <div className="flex flex-col items-center gap-1">
+                          <Scan className="w-6 h-6 text-emerald-400 animate-pulse" />
+                          <span className="text-white text-[9px] font-black uppercase tracking-widest text-center px-4 drop-shadow-md">Alinhe a etiqueta aqui</span>
+                        </div>
                       </div>
                     </div>
 
@@ -1003,9 +1046,14 @@ export default function App() {
                             <button
                               key={i}
                               onClick={() => setSelectedScannedPrice(p)}
-                              className={`px-3 py-2 rounded-xl border-2 transition-all font-black text-sm ${selectedScannedPrice === p ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-100 bg-slate-50 text-slate-400'}`}
+                              className={`px-3 py-2 rounded-xl border-2 transition-all font-black flex flex-col items-center min-w-[80px] ${selectedScannedPrice === p ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-100 bg-slate-50 text-slate-400'}`}
                             >
-                              {formatCurrency(p)}
+                              <span className="text-sm">{formatCurrency(p)}</span>
+                              {scannedResult.prices.length === 2 && (
+                                <span className="text-[8px] uppercase tracking-tighter opacity-60">
+                                  {i === 0 ? 'Varejo' : 'Atacado'}
+                                </span>
+                              )}
                             </button>
                           ))}
                         </div>

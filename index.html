@@ -3,7 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>My Google AI Studio App</title>
+    <title>Minha Compra</title>
+    <script>
+      // Prevent fetch polyfill crashes in read-only environments
+      // We use Object.create(window) so that libraries can "set" properties on global
+      // without actually trying to overwrite the read-only window properties.
+      window.global = Object.create(window);
+      window.process = { env: {} };
+    </script>
   </head>
   <body>
     <div id="root"></div>
