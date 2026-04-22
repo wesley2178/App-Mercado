@@ -280,21 +280,30 @@ export default function App() {
     const initCamera = async () => {
       if (isScannerOpen) {
         try {
-          const constraints = { 
+          const constraints: MediaStreamConstraints = { 
             video: { 
               facingMode: { ideal: "environment" },
               width: { ideal: 1280 },
               height: { ideal: 720 }
             } 
           };
-          const stream = await navigator.mediaDevices.getUserMedia(constraints);
+          
+          let stream: MediaStream;
+          try {
+            stream = await navigator.mediaDevices.getUserMedia(constraints);
+          } catch (firstErr) {
+            console.warn("Falha ao abrir câmera traseira, tentando padrão:", firstErr);
+            // Fallback para qualquer câmera disponível (importante para PCs/Notebooks)
+            stream = await navigator.mediaDevices.getUserMedia({ video: true });
+          }
+
           currentStream = stream;
           if (videoRef.current) {
             videoRef.current.srcObject = stream;
           }
         } catch (err) {
-          console.error("Erro câmera:", err);
-          setScannerError("Não foi possível acessar a câmera. Tente recarregar a página ou verifique as permissões do navegador.");
+          console.error("Erro total câmera:", err);
+          setScannerError("Não foi possível acessar a câmera. Tente recarregar a página ou verifique as permissões de privacidade.");
         }
       }
     };
@@ -347,6 +356,12 @@ export default function App() {
 
     const canvas = canvasRef.current;
     const video = videoRef.current;
+    
+    // Validação de segurança: evita erro de "width or height of 0"
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+      setScannerError("Aguardando inicialização da câmera... Tente clicar novamente em instantes.");
+      return;
+    }
     
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
