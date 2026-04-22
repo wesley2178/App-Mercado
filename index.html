@@ -5,11 +5,36 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Minha Compra</title>
     <script>
-      // Prevent fetch polyfill crashes in read-only environments
-      // We use Object.create(window) so that libraries can "set" properties on global
-      // without actually trying to overwrite the read-only window properties.
-      window.global = Object.create(window);
-      window.process = { env: {} };
+      (function() {
+        // Prevent "Cannot set property fetch of #<Window> which has only a getter"
+        // This shim creates a 'global' object that shadows 'window' but allows
+        // property assignments that would fail on the native window object.
+        const shadow = Object.create(window);
+        window.global = shadow;
+        window.process = { env: {} };
+        
+        // Some libraries use 'globalThis' or 'this' context
+        if (typeof globalThis !== 'undefined' && globalThis !== window) {
+          // globalThis is already something else
+        } else {
+          // We can't easily overwrite globalThis if it's the window
+        }
+        
+        // Force a configurable fetch if possible, otherwise rely on 'global' shim
+        try {
+          const originalFetch = window.fetch;
+          Object.defineProperty(window, 'fetch', {
+            get: function() { return originalFetch; },
+            set: function() { 
+              console.warn('Caught attempt to overwrite window.fetch - ignoring.');
+            },
+            configurable: true,
+            enumerable: true
+          });
+        } catch (e) {
+          // If we can't define it on window, we already provided window.global as a shadow.
+        }
+      })();
     </script>
   </head>
   <body>

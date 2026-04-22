@@ -364,7 +364,7 @@ export default function App() {
       
       // Regex mais tolerante: busca dígitos, seguido de um separador opcional e exatamente 2 dígitos
       const priceRegex = /(\d+)\s*[,.]?\s*(\d{2})\b/;
-      const priceCandidates: { value: number, x: number }[] = [];
+      const priceCandidates: { value: number, x: number, height: number }[] = [];
 
       // Função auxiliar para validar e extrair preço
       const extractPrice = (content: string, bbox: any) => {
@@ -374,24 +374,27 @@ export default function App() {
           const decPart = match[2];
           const val = parseFloat(`${intPart}.${decPart}`);
           
-          if (!isNaN(val) && val > 0 && val < 999) {
+          // FILTRO OBRIGATÓRIO: Considerar apenas preços entre 3 e 50 reais
+          // Isso ignora visualmente tributos e preços por litro/kg (geralmente menores)
+          if (!isNaN(val) && val >= 3.00 && val <= 50.00) {
             const centerX = (bbox.x0 + bbox.x1) / 2;
+            const height = bbox.y1 - bbox.y0;
+            
             // Evita duplicatas na mesma posição (mesmo preço lido em palavras/linhas sobrepostas)
-            const exists = priceCandidates.find(c => Math.abs(c.x - centerX) < 30);
+            const exists = priceCandidates.find(c => Math.abs(c.x - centerX) < 40);
             if (!exists) {
-              priceCandidates.push({ value: val, x: centerX });
+              priceCandidates.push({ value: val, x: centerX, height: height });
             }
           }
         }
       };
 
-      // 1ª Tentativa: Varredura por Palavras (mais precisa para X)
+      // 1ª Tentativa: Varredura por Palavras (mais precisa para X e identifica números grandes individualmente)
       ((data as any).words || []).forEach((word: any) => {
         extractPrice(word.text, word.bbox);
       });
 
-      // 2ª Tentativa: Se não achou na varredura de palavras (Tesseract pode ter separado o preço em várias words),
-      // busca nas linhas completas
+      // 2ª Tentativa: Fallback para linhas se não achou candidatos suficientes
       if (priceCandidates.length < 2) {
         ((data as any).lines || []).forEach((line: any) => {
            extractPrice(line.text, line.bbox);
@@ -399,18 +402,25 @@ export default function App() {
       }
 
       if (priceCandidates.length === 0) {
-        throw new Error('Nenhum preço encontrado. Verifique se os preços estão bem iluminados e dentro do guia.');
+        throw new Error('Preços principais não detectados. Tente enquadrar os dois números grandes no guia.');
+      }
+
+      // Se houver mais de 2 candidatos (ex: lixo de OCR), pegamos os 2 visualmente maiores (maior altura de bbox)
+      // para garantir que estamos pegando os preços "grandes" da etiqueta
+      let finalCandidates = [...priceCandidates];
+      if (finalCandidates.length > 2) {
+        finalCandidates.sort((a, b) => b.height - a.height);
+        finalCandidates = finalCandidates.slice(0, 2);
       }
 
       // Ordenar APENAS pela posição X (da esquerda para a direita)
-      const positionedSorted = [...priceCandidates].sort((a, b) => a.x - b.x);
+      const positionedSorted = finalCandidates.sort((a, b) => a.x - b.x);
       
-      // REGRA FIXA: 
+      // REGRA FIXA POSICIONAL: 
       // O número mais à ESQUERDA = Atacado
       // O número mais à DIREITA = Varejo
-      // Se só encontrou um único preço em qualquer lugar da imagem
       const atacado = positionedSorted[0].value;
-      const varejo = positionedSorted[positionedSorted.length - 1].value;
+      const varejo = positionedSorted.length > 1 ? positionedSorted[1].value : positionedSorted[0].value;
       
       const result = {
         name: productName,
