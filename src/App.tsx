@@ -55,11 +55,11 @@ export default function App() {
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [scannedResult, setScannedResult] = useState<{ name: string, atacado: number, varejo: number } | null>(null);
-  const [selectedScannedPrice, setSelectedScannedPrice] = useState<number | null>(null);
   const [scannerError, setScannerError] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const workerRef = useRef<any>(null);
 
   // Load from localStorage on mount
   useEffect(() => {
@@ -276,6 +276,17 @@ export default function App() {
     setIsScannerOpen(true);
     setScannerError(null);
     setScannedResult(null);
+
+    // Inicializa o worker em background se ainda não existir
+    if (!workerRef.current) {
+      try {
+        const worker = await createWorker('por');
+        workerRef.current = worker;
+      } catch (e) {
+        console.error("Erro ao inicializar OCR:", e);
+      }
+    }
+
     try {
       const constraints = { 
         video: { facingMode: { ideal: "environment" } } 
@@ -290,14 +301,21 @@ export default function App() {
     }
   };
 
-  const stopScanner = () => {
+  const stopScanner = async () => {
     if (videoRef.current && videoRef.current.srcObject) {
       const stream = videoRef.current.srcObject as MediaStream;
       stream.getTracks().forEach(track => track.stop());
     }
+    
     setIsScannerOpen(false);
     setIsAnalyzing(false);
     setScannedResult(null);
+
+    // Encerra o worker para liberar memória
+    if (workerRef.current) {
+      await workerRef.current.terminate();
+      workerRef.current = null;
+    }
   };
 
   const captureAndAnalyze = async () => {
@@ -306,19 +324,16 @@ export default function App() {
     const canvas = canvasRef.current;
     const video = videoRef.current;
     
-    // Configura o canvas para o tamanho real do vídeo
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Desenha o vídeo no canvas
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // Crop heurístico: foca no centro (onde está o guia visual)
-    // Aumentamos um pouco a altura para garantir captura total da etiqueta (70%)
-    const cropWidth = canvas.width * 0.9;
-    const cropHeight = canvas.height * 0.7;
+    // Crop: Pegamos 95% da largura e aumentamos a altura para 80% para garantir captura de tudo
+    const cropWidth = canvas.width * 0.95;
+    const cropHeight = canvas.height * 0.8;
     const cropX = (canvas.width - cropWidth) / 2;
     const cropY = (canvas.height - cropHeight) / 2;
 
@@ -327,111 +342,99 @@ export default function App() {
     cropCanvas.height = cropHeight;
     const cropCtx = cropCanvas.getContext('2d');
     if (cropCtx) {
-      // Aplica um filtro de contraste para melhorar o OCR
-      cropCtx.filter = 'contrast(1.6) grayscale(1)';
+      // Filtros agressivos para Tesseract
+      cropCtx.filter = 'grayscale(1) contrast(2) brightness(1.1)';
       cropCtx.drawImage(canvas, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
     }
 
-    const imageData = cropCanvas.toDataURL("image/jpeg", 0.9);
+    const imageData = cropCanvas.toDataURL("image/jpeg", 1.0);
 
     setIsAnalyzing(true);
     setScannerError(null);
 
     try {
-      const worker = await createWorker('por');
-      const { data } = await worker.recognize(imageData);
-      await worker.terminate();
+      // Re-inicializa se foi fechado ou falhou
+      if (!workerRef.current) {
+        workerRef.current = await createWorker('por');
+      }
 
+      const { data } = await workerRef.current.recognize(imageData);
       const text = data.text;
 
       if (!text || text.trim().length === 0) {
-        throw new Error('Nenhum texto identificado. Tente aproximar mais a câmera ou melhorar a iluminação.');
+        throw new Error('Nenhum texto identificado. Tente melhorar a iluminação ou aproximar mais a câmera.');
       }
 
-      // REGRA FIXA: Nome é a junção da linha 1 e 2
-      // Usamos split("\n") que é mais robusto para separar linhas visuais no Tesseract
-      const rawLines = text.split('\n').map(l => l.trim()).filter(l => l.length > 1);
+      // 1. EXTRAÇÃO DO NOME (Regra: Linha 1 + Linha 2)
+      // Filtramos lixo comum e linhas que parecem preços para não sujar o nome
+      const validLines = text.split('\n')
+        .map(l => l.trim())
+        .filter(l => {
+          const hasPrice = /(\d+[,.]\d{2})/.test(l);
+          return l.length >= 2 && !hasPrice && !/^[^a-zA-Z0-9]+$/.test(l);
+        });
       
-      if (rawLines.length < 2) {
-        throw new Error('Não foi possível identificar o nome e complemento do produto. Tente aproximar a câmera para que o texto ocupe mais espaço no guia.');
+      if (validLines.length < 2) {
+        throw new Error('Não foi possível identificar o nome do produto no topo da etiqueta. Tente centralizar melhor.');
       }
 
-      const productName = `${rawLines[0]} ${rawLines[1]}`.trim();
+      const productName = `${validLines[0]} ${validLines[1]}`.trim();
 
-      // REGRA FIXA POSICIONAL: 
-      // 1. Identificar números no formato XX,XX ou XX.XX ou XX 99 (comum em etiquetas grandes)
-      // 2. Armazenar o valor e sua posição horizontal (X)
-      
-      // Regex mais tolerante: busca dígitos, seguido de um separador opcional e exatamente 2 dígitos
+      // 2. EXTRAÇÃO DE PREÇOS (Regra: Posição X, apenas entre 3 e 50 reais)
       const priceRegex = /(\d+)\s*[,.]?\s*(\d{2})\b/;
-      const priceCandidates: { value: number, x: number, height: number }[] = [];
+      const candidates: { value: number, x: number, height: number }[] = [];
 
-      // Função auxiliar para validar e extrair preço
-      const extractPrice = (content: string, bbox: any) => {
-        const match = content.match(priceRegex);
+      const processItem = (itemText: string, bbox: any) => {
+        const match = itemText.match(priceRegex);
         if (match) {
-          const intPart = match[1];
-          const decPart = match[2];
-          const val = parseFloat(`${intPart}.${decPart}`);
-          
-          // FILTRO OBRIGATÓRIO: Considerar apenas preços entre 3 e 50 reais
-          // Isso ignora visualmente tributos e preços por litro/kg (geralmente menores)
-          if (!isNaN(val) && val >= 3.00 && val <= 50.00) {
+          const val = parseFloat(`${match[1]}.${match[2]}`);
+          // FILTRO: Apenas entre 3 e 50 reais (regra do usuário)
+          if (val >= 3.00 && val <= 50.00) {
             const centerX = (bbox.x0 + bbox.x1) / 2;
             const height = bbox.y1 - bbox.y0;
             
-            // Evita duplicatas na mesma posição (mesmo preço lido em palavras/linhas sobrepostas)
-            const exists = priceCandidates.find(c => Math.abs(c.x - centerX) < 40);
-            if (!exists) {
-              priceCandidates.push({ value: val, x: centerX, height: height });
+            // Evita redundância
+            if (!candidates.find(c => Math.abs(c.x - centerX) < 50)) {
+              candidates.push({ value: val, x: centerX, height: height });
             }
           }
         }
       };
 
-      // 1ª Tentativa: Varredura por Palavras (mais precisa para X e identifica números grandes individualmente)
-      ((data as any).words || []).forEach((word: any) => {
-        extractPrice(word.text, word.bbox);
-      });
-
-      // 2ª Tentativa: Fallback para linhas se não achou candidatos suficientes
-      if (priceCandidates.length < 2) {
-        ((data as any).lines || []).forEach((line: any) => {
-           extractPrice(line.text, line.bbox);
-        });
-      }
-
-      if (priceCandidates.length === 0) {
-        throw new Error('Preços principais não detectados. Tente enquadrar os dois números grandes no guia.');
-      }
-
-      // Se houver mais de 2 candidatos (ex: lixo de OCR), pegamos os 2 visualmente maiores (maior altura de bbox)
-      // para garantir que estamos pegando os preços "grandes" da etiqueta
-      let finalCandidates = [...priceCandidates];
-      if (finalCandidates.length > 2) {
-        finalCandidates.sort((a, b) => b.height - a.height);
-        finalCandidates = finalCandidates.slice(0, 2);
-      }
-
-      // Ordenar APENAS pela posição X (da esquerda para a direita)
-      const positionedSorted = finalCandidates.sort((a, b) => a.x - b.x);
+      // Varredura por palavras
+      ((data as any).words || []).forEach((w: any) => processItem(w.text, w.bbox));
       
-      // REGRA FIXA POSICIONAL: 
-      // O número mais à ESQUERDA = Atacado
-      // O número mais à DIREITA = Varejo
-      const atacado = positionedSorted[0].value;
-      const varejo = positionedSorted.length > 1 ? positionedSorted[1].value : positionedSorted[0].value;
+      // Fallback para linhas se faltarem preços
+      if (candidates.length < 2) {
+        ((data as any).lines || []).forEach((l: any) => processItem(l.text, l.bbox));
+      }
+
+      if (candidates.length === 0) {
+        throw new Error('Nenhum preço entre R$ 3,00 e R$ 50,00 foi encontrado.');
+      }
+
+      // Pegamos os 2 maiores visualmente (maior altura da bounding box)
+      let finalNodes = [...candidates];
+      if (finalNodes.length > 2) {
+        finalNodes.sort((a, b) => b.height - a.height);
+        finalNodes = finalNodes.slice(0, 2);
+      }
+
+      // Classificação Posicional: Esquerda = Atacado, Direita = Varejo
+      const sortedX = finalNodes.sort((a, b) => a.x - b.x);
       
-      const result = {
+      const atacado = sortedX[0].value;
+      const varejo = sortedX.length > 1 ? sortedX[1].value : sortedX[0].value;
+
+      setScannedResult({
         name: productName,
         atacado: atacado,
         varejo: varejo
-      };
+      });
 
-      setScannedResult(result);
     } catch (err) {
       console.error(err);
-      setScannerError(err instanceof Error ? err.message : "Erro desconhecido ao processar o OCR local.");
+      setScannerError(err instanceof Error ? err.message : "Erro ao processar imagem.");
     } finally {
       setIsAnalyzing(false);
     }
