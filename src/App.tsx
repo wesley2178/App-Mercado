@@ -316,10 +316,9 @@ export default function App() {
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     // Crop heurístico: foca no centro (onde está o guia visual)
-    // O guia tem aprox 64/container_width e 40/container_height
-    // Vamos pegar os 60% centrais para evitar ruído de bordas
-    const cropWidth = canvas.width * 0.8;
-    const cropHeight = canvas.height * 0.5;
+    // Aumentamos um pouco a altura para garantir captura total da etiqueta (70%)
+    const cropWidth = canvas.width * 0.9;
+    const cropHeight = canvas.height * 0.7;
     const cropX = (canvas.width - cropWidth) / 2;
     const cropY = (canvas.height - cropHeight) / 2;
 
@@ -329,7 +328,7 @@ export default function App() {
     const cropCtx = cropCanvas.getContext('2d');
     if (cropCtx) {
       // Aplica um filtro de contraste para melhorar o OCR
-      cropCtx.filter = 'contrast(1.5) grayscale(1)';
+      cropCtx.filter = 'contrast(1.6) grayscale(1)';
       cropCtx.drawImage(canvas, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
     }
 
@@ -344,18 +343,17 @@ export default function App() {
       await worker.terminate();
 
       const text = data.text;
-      const lines = (data as any).lines || [];
 
       if (!text || text.trim().length === 0) {
         throw new Error('Nenhum texto identificado. Tente aproximar mais a câmera ou melhorar a iluminação.');
       }
 
       // REGRA FIXA: Nome é a junção da linha 1 e 2
-      // Filtramos apenas linhas que realmente tenham texto substancial
-      const rawLines = lines.map(l => l.text.trim()).filter(l => l.length > 0);
+      // Usamos split("\n") que é mais robusto para separar linhas visuais no Tesseract
+      const rawLines = text.split('\n').map(l => l.trim()).filter(l => l.length > 1);
       
       if (rawLines.length < 2) {
-        throw new Error('Não foi possível identificar o nome e complemento do produto. Tente centralizar a etiqueta.');
+        throw new Error('Não foi possível identificar o nome e complemento do produto. Tente aproximar a câmera para que o texto ocupe mais espaço no guia.');
       }
 
       const productName = `${rawLines[0]} ${rawLines[1]}`.trim();
