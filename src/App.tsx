@@ -54,7 +54,9 @@ export default function App() {
   // Smart Add (Scanner) states
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [scannedResult, setScannedResult] = useState<{ name: string, atacado: number, varejo: number } | null>(null);
+  const [scannedResult, setScannedResult] = useState<{ suggestedName: string, prices: number[] } | null>(null);
+  const [scannedName, setScannedName] = useState("");
+  const [selectedScannedPrice, setSelectedScannedPrice] = useState<number | null>(null);
   const [scannerError, setScannerError] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -366,7 +368,6 @@ export default function App() {
       }
 
       // 1. EXTRAÇÃO DO NOME (Regra: Linha 1 + Linha 2)
-      // Filtramos lixo comum e linhas que parecem preços para não sujar o nome
       const validLines = text.split('\n')
         .map(l => l.trim())
         .filter(l => {
@@ -374,63 +375,40 @@ export default function App() {
           return l.length >= 2 && !hasPrice && !/^[^a-zA-Z0-9]+$/.test(l);
         });
       
-      if (validLines.length < 2) {
-        throw new Error('Não foi possível identificar o nome do produto no topo da etiqueta. Tente centralizar melhor.');
-      }
+      const productName = validLines.length >= 2 
+        ? `${validLines[0]} ${validLines[1]}`.trim()
+        : (validLines[0] || "");
 
-      const productName = `${validLines[0]} ${validLines[1]}`.trim();
-
-      // 2. EXTRAÇÃO DE PREÇOS (Regra: Posição X, apenas entre 3 e 50 reais)
+      // 2. EXTRAÇÃO DE PREÇOS (Regra: apenas entre 3 e 50 reais)
       const priceRegex = /(\d+)\s*[,.]?\s*(\d{2})\b/;
-      const candidates: { value: number, x: number, height: number }[] = [];
+      const foundPrices = new Set<number>();
 
-      const processItem = (itemText: string, bbox: any) => {
+      const processItem = (itemText: string) => {
         const match = itemText.match(priceRegex);
         if (match) {
           const val = parseFloat(`${match[1]}.${match[2]}`);
-          // FILTRO: Apenas entre 3 e 50 reais (regra do usuário)
           if (val >= 3.00 && val <= 50.00) {
-            const centerX = (bbox.x0 + bbox.x1) / 2;
-            const height = bbox.y1 - bbox.y0;
-            
-            // Evita redundância
-            if (!candidates.find(c => Math.abs(c.x - centerX) < 50)) {
-              candidates.push({ value: val, x: centerX, height: height });
-            }
+            foundPrices.add(val);
           }
         }
       };
 
-      // Varredura por palavras
-      ((data as any).words || []).forEach((w: any) => processItem(w.text, w.bbox));
-      
-      // Fallback para linhas se faltarem preços
-      if (candidates.length < 2) {
-        ((data as any).lines || []).forEach((l: any) => processItem(l.text, l.bbox));
-      }
+      ((data as any).words || []).forEach((w: any) => processItem(w.text));
+      ((data as any).lines || []).forEach((l: any) => processItem(l.text));
 
-      if (candidates.length === 0) {
+      const pricesArray = Array.from(foundPrices).sort((a, b) => a - b);
+
+      if (pricesArray.length === 0) {
         throw new Error('Nenhum preço entre R$ 3,00 e R$ 50,00 foi encontrado.');
       }
 
-      // Pegamos os 2 maiores visualmente (maior altura da bounding box)
-      let finalNodes = [...candidates];
-      if (finalNodes.length > 2) {
-        finalNodes.sort((a, b) => b.height - a.height);
-        finalNodes = finalNodes.slice(0, 2);
-      }
-
-      // Classificação Posicional: Esquerda = Atacado, Direita = Varejo
-      const sortedX = finalNodes.sort((a, b) => a.x - b.x);
-      
-      const atacado = sortedX[0].value;
-      const varejo = sortedX.length > 1 ? sortedX[1].value : sortedX[0].value;
-
+      setScannedName(productName);
       setScannedResult({
-        name: productName,
-        atacado: atacado,
-        varejo: varejo
+        suggestedName: productName,
+        prices: pricesArray
       });
+      // Seleciona o primeiro preço por padrão
+      setSelectedScannedPrice(pricesArray[0]);
 
     } catch (err) {
       console.error(err);
@@ -440,14 +418,14 @@ export default function App() {
     }
   };
 
-  const addItemFromScanner = (price: number, type: 'atacado' | 'varejo') => {
-    if (!scannedResult) return;
+  const addItemFromScanner = () => {
+    if (!scannedResult || !selectedScannedPrice) return;
 
     const newItem: ShoppingItem = {
       id: crypto.randomUUID(),
-      name: `${scannedResult.name}${type === 'atacado' ? ' (Atacado)' : ''}`,
+      name: scannedName.trim() || scannedResult.suggestedName,
       quantity: 1,
-      price: price,
+      price: selectedScannedPrice,
     };
 
     setItems((prev) => [newItem, ...prev]);
@@ -1084,61 +1062,65 @@ export default function App() {
                     </div>
                   </>
                 ) : (
-                  <div className="absolute inset-0 bg-slate-900 p-8 flex flex-col justify-center">
+                  <div className="absolute inset-0 bg-slate-900 p-6 flex flex-col justify-center overflow-y-auto">
                     <div className="bg-white rounded-3xl p-6 shadow-2xl">
-                      <div className="flex items-center gap-2 mb-4">
+                      <div className="flex items-center gap-2 mb-6">
                         <div className="bg-emerald-100 p-2 rounded-xl">
                           <Scan className="w-5 h-5 text-emerald-600" />
                         </div>
-                        <h4 className="text-slate-800 font-bold uppercase text-xs tracking-widest leading-none">Dados Identificados</h4>
+                        <h4 className="text-slate-800 font-bold uppercase text-[10px] tracking-widest leading-none">Confirmar Dados</h4>
                       </div>
 
-                      <div className="mb-4">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Produto</label>
-                        <p className="text-base font-black text-slate-800 leading-tight">{scannedResult.name}</p>
+                      <div className="mb-6">
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Produto sugerido</label>
+                        <input 
+                          type="text"
+                          value={scannedName}
+                          onChange={(e) => setScannedName(e.target.value)}
+                          className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-4 py-3 text-slate-800 font-bold focus:border-emerald-500 focus:outline-none transition-colors"
+                          placeholder="Nome do produto"
+                        />
                       </div>
 
-                      <div className="space-y-3 mb-6 bg-slate-50 p-4 rounded-2xl border border-slate-100">
-                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest text-center mb-2">Preços encontrados</p>
-                        <div className="flex justify-between items-center px-2">
-                          <span className="text-xs font-bold text-slate-500 uppercase">Atacado:</span>
-                          <span className="text-sm font-black text-emerald-600">{formatCurrency(scannedResult.atacado)}</span>
+                      <div className="mb-6">
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-3 px-1 text-center">Preços encontrados</label>
+                        <div className="grid grid-cols-1 gap-2 max-h-40 overflow-y-auto pr-1">
+                          {scannedResult.prices.map((p, idx) => (
+                            <button
+                              key={idx}
+                              onClick={() => setSelectedScannedPrice(p)}
+                              className={`w-full py-3 px-4 rounded-2xl flex justify-between items-center transition-all ${
+                                selectedScannedPrice === p 
+                                ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-200 border-2 border-emerald-500' 
+                                : 'bg-slate-50 text-slate-600 border-2 border-slate-100'
+                              }`}
+                            >
+                              <span className="text-[10px] font-black uppercase tracking-wider">
+                                {selectedScannedPrice === p ? 'Selecionado' : `Opção ${idx + 1}`}
+                              </span>
+                              <span className="text-sm font-black">{formatCurrency(p)}</span>
+                            </button>
+                          ))}
                         </div>
-                        <div className="flex justify-between items-center px-2">
-                          <span className="text-xs font-bold text-slate-500 uppercase">Varejo:</span>
-                          <span className="text-sm font-black text-slate-800">{formatCurrency(scannedResult.varejo)}</span>
-                        </div>
                       </div>
 
-                      <div className="mb-6 text-center">
-                        <p className="text-xs font-bold text-slate-600">Qual preço deseja usar?</p>
-                      </div>
-
-                      <div className="grid grid-cols-1 gap-2 mb-4">
+                      <div className="space-y-3">
                         <motion.button 
                           whileTap={{ scale: 0.98 }}
-                          onClick={() => addItemFromScanner(scannedResult.atacado, 'atacado')}
-                          className="py-3 px-4 rounded-2xl bg-emerald-500 text-white font-black text-xs uppercase tracking-tighter shadow-lg shadow-emerald-200 hover:bg-emerald-600 transition-colors flex justify-between items-center"
+                          disabled={!selectedScannedPrice}
+                          onClick={addItemFromScanner}
+                          className="w-full py-4 rounded-2xl bg-slate-800 text-white font-black text-xs uppercase tracking-widest shadow-xl hover:bg-black transition-all flex justify-center items-center gap-2"
                         >
-                          <span>Usar preço atacado</span>
-                          <span>{formatCurrency(scannedResult.atacado)}</span>
+                          Confirmar e Adicionar
                         </motion.button>
-                        <motion.button 
-                          whileTap={{ scale: 0.98 }}
-                          onClick={() => addItemFromScanner(scannedResult.varejo, 'varejo')}
-                          className="py-3 px-4 rounded-2xl bg-slate-800 text-white font-black text-xs uppercase tracking-tighter shadow-lg shadow-slate-200 hover:bg-black transition-colors flex justify-between items-center"
-                        >
-                          <span>Usar preço varejo</span>
-                          <span>{formatCurrency(scannedResult.varejo)}</span>
-                        </motion.button>
-                      </div>
 
-                      <button 
-                        onClick={() => setScannedResult(null)}
-                        className="w-full py-3 rounded-2xl text-slate-400 font-bold text-[10px] uppercase tracking-widest hover:text-slate-600 transition-colors"
-                      >
-                        TIRAR OUTRA FOTO
-                      </button>
+                        <button 
+                          onClick={() => setScannedResult(null)}
+                          className="w-full py-2 text-slate-400 font-bold text-[10px] uppercase tracking-widest hover:text-slate-600 transition-colors"
+                        >
+                          TIRAR OUTRA FOTO
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}
