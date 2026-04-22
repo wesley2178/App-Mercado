@@ -359,39 +359,56 @@ export default function App() {
       const productName = `${rawLines[0]} ${rawLines[1]}`.trim();
 
       // REGRA FIXA POSICIONAL: 
-      // 1. Identificar números no formato XX,XX ou XX.XX
+      // 1. Identificar números no formato XX,XX ou XX.XX ou XX 99 (comum em etiquetas grandes)
       // 2. Armazenar o valor e sua posição horizontal (X)
-      const priceRegex = /(\d+[,.]\d{2})/;
+      
+      // Regex mais tolerante: busca dígitos, seguido de um separador opcional e exatamente 2 dígitos
+      const priceRegex = /(\d+)\s*[,.]?\s*(\d{2})\b/;
       const priceCandidates: { value: number, x: number }[] = [];
 
-      // Varremos todas as palavras detectadas para encontrar preços e suas posições
-      ((data as any).words || []).forEach((word: any) => {
-        const match = word.text.match(priceRegex);
+      // Função auxiliar para validar e extrair preço
+      const extractPrice = (content: string, bbox: any) => {
+        const match = content.match(priceRegex);
         if (match) {
-          const val = parseFloat(match[1].replace(',', '.'));
-          if (!isNaN(val) && val > 0) {
-            // Pegamos o centro horizontal da palavra
-            const centerX = (word.bbox.x0 + word.bbox.x1) / 2;
-            
-            // Evita duplicatas próximas (mesmo preço detectado duas vezes por ruído)
-            const exists = priceCandidates.find(c => Math.abs(c.x - centerX) < 20);
+          const intPart = match[1];
+          const decPart = match[2];
+          const val = parseFloat(`${intPart}.${decPart}`);
+          
+          if (!isNaN(val) && val > 0 && val < 999) {
+            const centerX = (bbox.x0 + bbox.x1) / 2;
+            // Evita duplicatas na mesma posição (mesmo preço lido em palavras/linhas sobrepostas)
+            const exists = priceCandidates.find(c => Math.abs(c.x - centerX) < 30);
             if (!exists) {
               priceCandidates.push({ value: val, x: centerX });
             }
           }
         }
+      };
+
+      // 1ª Tentativa: Varredura por Palavras (mais precisa para X)
+      ((data as any).words || []).forEach((word: any) => {
+        extractPrice(word.text, word.bbox);
       });
 
-      if (priceCandidates.length === 0) {
-        throw new Error('Nenhum preço encontrado no padrão XX,XX.');
+      // 2ª Tentativa: Se não achou na varredura de palavras (Tesseract pode ter separado o preço em várias words),
+      // busca nas linhas completas
+      if (priceCandidates.length < 2) {
+        ((data as any).lines || []).forEach((line: any) => {
+           extractPrice(line.text, line.bbox);
+        });
       }
 
-      // Ordenar apenas pela posição X (da esquerda para a direita)
+      if (priceCandidates.length === 0) {
+        throw new Error('Nenhum preço encontrado. Verifique se os preços estão bem iluminados e dentro do guia.');
+      }
+
+      // Ordenar APENAS pela posição X (da esquerda para a direita)
       const positionedSorted = [...priceCandidates].sort((a, b) => a.x - b.x);
       
       // REGRA FIXA: 
       // O número mais à ESQUERDA = Atacado
       // O número mais à DIREITA = Varejo
+      // Se só encontrou um único preço em qualquer lugar da imagem
       const atacado = positionedSorted[0].value;
       const varejo = positionedSorted[positionedSorted.length - 1].value;
       
