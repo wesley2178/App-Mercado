@@ -4,7 +4,7 @@
  */
 
 import { useState, useMemo, FormEvent, useEffect, useRef } from "react";
-import { Plus, Trash2, LayoutGrid, User, Settings, Pencil, Check, X, CheckCircle2, Clock, ChevronRight, ArrowLeft, Calendar, Box, Minus, Play, History, TrendingUp, TrendingDown, BarChart3, PieChart, Camera, Scan, Sparkles, Loader2, XCircle, TrendingUp as TrendingUpIcon, TrendingDown as TrendingDownIcon } from "lucide-react";
+import { Plus, Trash2, LayoutGrid, User, Settings, Pencil, Check, X, CheckCircle2, Clock, ChevronRight, ArrowLeft, Calendar, Box, Minus, Play, History, TrendingUp, TrendingDown, BarChart3, PieChart, Sparkles, TrendingUp as TrendingUpIcon, TrendingDown as TrendingDownIcon, ListTodo, ShoppingBasket, Camera, Scan, Loader2, XCircle } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { createWorker } from "tesseract.js";
 
@@ -18,6 +18,7 @@ interface ShoppingItem {
 interface PurchaseHistory {
   id: string;
   date: string;
+  storeName: string;
   items: ShoppingItem[];
   total: number;
 }
@@ -29,7 +30,23 @@ interface InventoryItem {
   isUsing: boolean;
 }
 
-type Tab = "current" | "history" | "inventory" | "summary" | "settings";
+interface TodoItem {
+  id: string;
+  name: string;
+  completed: boolean;
+}
+
+type Tab = "current" | "history" | "inventory" | "summary" | "todo";
+
+const normalizeString = (str: string) => {
+  return str
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // Remove accents
+    .replace(/[^\w\s]/g, "")         // Remove punctuation
+    .replace(/\s+/g, " ")            // Normalize spaces
+    .trim();
+};
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>("current");
@@ -38,6 +55,7 @@ export default function App() {
   const [name, setName] = useState("");
   const [quantity, setQuantity] = useState("");
   const [price, setPrice] = useState("");
+  const [storeName, setStoreName] = useState("");
 
   // History states
   const [history, setHistory] = useState<PurchaseHistory[]>([]);
@@ -50,6 +68,28 @@ export default function App() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editQuantity, setEditQuantity] = useState("");
   const [editPrice, setEditPrice] = useState("");
+  const [editHistoryItemId, setEditHistoryItemId] = useState<string | null>(null);
+  const [editHistoryName, setEditHistoryName] = useState("");
+  const [editHistoryQuantity, setEditHistoryQuantity] = useState("");
+  const [editHistoryPrice, setEditHistoryPrice] = useState("");
+  const [isAddingToHistory, setIsAddingToHistory] = useState(false);
+  const [newHistItemName, setNewHistItemName] = useState("");
+  const [newHistItemQty, setNewHistItemQty] = useState("");
+  const [newHistItemPrice, setNewHistItemPrice] = useState("");
+  const [isEditingStoreName, setIsEditingStoreName] = useState(false);
+  const [editStoreName, setEditStoreName] = useState("");
+
+  // Comparison states
+  const [compareId1, setCompareId1] = useState<string>("");
+  const [compareId2, setCompareId2] = useState<string>("");
+
+  // Todo List states (What's missing)
+  const [todoItems, setTodoItems] = useState<TodoItem[]>([]);
+  const [todoName, setTodoName] = useState("");
+
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const workerRef = useRef<any>(null);
 
   // Smart Add (Scanner) states
   const [isScannerOpen, setIsScannerOpen] = useState(false);
@@ -59,15 +99,12 @@ export default function App() {
   const [selectedScannedPrice, setSelectedScannedPrice] = useState<number | null>(null);
   const [scannerError, setScannerError] = useState<string | null>(null);
 
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const workerRef = useRef<any>(null);
-
   // Load from localStorage on mount
   useEffect(() => {
     const savedItems = localStorage.getItem("shopping_list_current");
     const savedHistory = localStorage.getItem("shopping_history");
     const savedInventory = localStorage.getItem("shopping_inventory");
+    const savedTodo = localStorage.getItem("shopping_todo");
     
     if (savedItems) {
       try { setItems(JSON.parse(savedItems)); } catch (e) { console.error(e); }
@@ -78,6 +115,9 @@ export default function App() {
     if (savedInventory) {
       try { setInventory(JSON.parse(savedInventory)); } catch (e) { console.error(e); }
     }
+    if (savedTodo) {
+      try { setTodoItems(JSON.parse(savedTodo)); } catch (e) { console.error(e); }
+    }
     setIsLoaded(true);
   }, []);
 
@@ -86,8 +126,9 @@ export default function App() {
     if (isLoaded) {
       localStorage.setItem("shopping_list_current", JSON.stringify(items));
       localStorage.setItem("shopping_inventory", JSON.stringify(inventory));
+      localStorage.setItem("shopping_todo", JSON.stringify(todoItems));
     }
-  }, [items, inventory, isLoaded]);
+  }, [items, inventory, todoItems, isLoaded]);
 
   const totalGeneral = useMemo(() => {
     return items.reduce((acc, item) => acc + item.quantity * item.price, 0);
@@ -167,6 +208,35 @@ export default function App() {
     };
   }, [history]);
 
+  const comparisonResult = useMemo(() => {
+    if (!compareId1 || !compareId2) return null;
+    const h1 = history.find(h => h.id === compareId1);
+    const h2 = history.find(h => h.id === compareId2);
+    if (!h1 || !h2) return null;
+
+    const commonItems: { name: string, price1: number, price2: number, diff: number }[] = [];
+    
+    h1.items.forEach(i1 => {
+      const norm1 = normalizeString(i1.name);
+      const match = h2.items.find(i2 => normalizeString(i2.name) === norm1);
+      if (match) {
+        commonItems.push({
+          name: i1.name,
+          price1: i1.price,
+          price2: match.price,
+          diff: match.price - i1.price
+        });
+      }
+    });
+
+    return {
+      store1: h1.storeName,
+      store2: h2.storeName,
+      items: commonItems,
+      totalDiff: h2.total - h1.total
+    };
+  }, [compareId1, compareId2, history]);
+
   const handleAddItem = (e: FormEvent) => {
     e.preventDefault();
     if (!name.trim() || !quantity || !price) return;
@@ -179,9 +249,244 @@ export default function App() {
     };
 
     setItems((prev) => [newItem, ...prev]);
+
+    // Update Todo items if match found (ignoring case and punctuation)
+    const normalizedNewName = normalizeString(name);
+    setTodoItems(prev => prev.map(todo => {
+      if (!todo.completed && normalizeString(todo.name) === normalizedNewName) {
+        return { ...todo, completed: true };
+      }
+      return todo;
+    }));
+
     setName("");
     setQuantity("");
     setPrice("");
+  };
+
+  // --- Scanner Logic ---
+  useEffect(() => {
+    let currentStream: MediaStream | null = null;
+
+    const initCamera = async () => {
+      if (isScannerOpen) {
+        try {
+          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            throw new Error("Seu navegador não suporta acesso à câmera.");
+          }
+
+          let stream: MediaStream;
+          
+          // Tenta primeiro com as configurações ideais (câmera traseira)
+          try {
+            const constraints: MediaStreamConstraints = { 
+              video: { 
+                facingMode: { ideal: "environment" },
+                width: { ideal: 1280 },
+                height: { ideal: 720 }
+              } 
+            };
+            stream = await navigator.mediaDevices.getUserMedia(constraints);
+          } catch (firstErr) {
+            console.warn("Falha ao abrir câmera com restrições ideais, tentando genérico:", firstErr);
+            // Fallback: Tentativa ultra-genérica (qualquer câmera)
+            stream = await navigator.mediaDevices.getUserMedia({ video: true });
+          }
+
+          currentStream = stream;
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+            // Safari mobile precisa do play() explícito às vezes mesmo com autoPlay
+            videoRef.current.play().catch(e => console.error("Erro ao dar play no vídeo:", e));
+          }
+        } catch (err) {
+          console.error("Erro total câmera:", err);
+          let userMsg = "Não foi possível acessar a câmera.";
+          
+          if (err instanceof Error) {
+            if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+              userMsg = "Permissão da câmera negada. Verifique as configurações do seu navegador.";
+            } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+              userMsg = "Nenhuma câmera encontrada no seu dispositivo.";
+            } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
+              userMsg = "A câmera já está sendo usada por outro aplicativo.";
+            }
+          }
+          
+          setScannerError(userMsg + " Tente recarregar a página ou usar em um navegador moderno.");
+        }
+      }
+    };
+
+    initCamera();
+
+    return () => {
+      if (currentStream) {
+        currentStream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [isScannerOpen]);
+
+  const startScanner = async () => {
+    setIsScannerOpen(true);
+    setScannerError(null);
+    setScannedResult(null);
+    setScannedName("");
+    setSelectedScannedPrice(null);
+
+    // Load worker immediately to reduce delay
+    if (!workerRef.current) {
+      try {
+        const worker = await createWorker('por');
+        workerRef.current = worker;
+      } catch (e) {
+        console.error("Erro ao inicializar OCR:", e);
+      }
+    }
+  };
+
+  const stopScanner = async () => {
+    setIsScannerOpen(false);
+    setIsAnalyzing(false);
+    setScannedResult(null);
+
+    if (workerRef.current) {
+      try {
+        await workerRef.current.terminate();
+        workerRef.current = null;
+      } catch (e) {
+        console.error("Erro ao fechar worker:", e);
+      }
+    }
+  };
+
+  const captureAndAnalyze = async () => {
+    if (!videoRef.current || !canvasRef.current) return;
+
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+    
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+      setScannerError("Aguardando câmera...");
+      return;
+    }
+    
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    // Improved Focus Area
+    const cropWidth = canvas.width * 0.9;
+    const cropHeight = canvas.height * 0.8;
+    const cropX = (canvas.width - cropWidth) / 2;
+    const cropY = (canvas.height - cropHeight) / 2;
+
+    const cropCanvas = document.createElement('canvas');
+    cropCanvas.width = cropWidth;
+    cropCanvas.height = cropHeight;
+    const cropCtx = cropCanvas.getContext('2d');
+    if (cropCtx) {
+      // Grayscale + High Contrast for shelf labels
+      cropCtx.filter = 'grayscale(1) contrast(2.5) brightness(1.1)';
+      cropCtx.drawImage(canvas, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+    }
+
+    const imageData = cropCanvas.toDataURL("image/jpeg", 0.95);
+
+    setIsAnalyzing(true);
+    setScannerError(null);
+
+    try {
+      if (!workerRef.current) {
+        workerRef.current = await createWorker('por');
+      }
+
+      const { data } = await workerRef.current.recognize(imageData);
+      const text = data.text;
+
+      if (!text || text.trim().length === 0) {
+        throw new Error('Nenhum texto identificado. Aproxime mais e evite reflexos.');
+      }
+
+      // Parser for Product Name (Usually the first few lines are the name)
+      const validLines = text.split('\n')
+        .map(l => l.trim())
+        .filter(l => {
+          const hasPrice = /(\d+[,.]\d{2})/.test(l);
+          return l.length >= 3 && !hasPrice && !/^[^a-zA-Z0-9]+$/.test(l);
+        });
+      
+      const productName = validLines.length >= 2 
+        ? `${validLines[0]} ${validLines[1]}`.trim()
+        : (validLines[0] || "");
+
+      // Parser for Prices (Optimized for Brazil R$ formats on labels)
+      const priceRegex = /(\d+)\s*[,.]\s*(\d{2})/g;
+      const foundPrices = new Set<number>();
+
+      const processText = (itemText: string) => {
+        let match;
+        priceRegex.lastIndex = 0;
+        while ((match = priceRegex.exec(itemText)) !== null) {
+          const val = parseFloat(`${match[1]}.${match[2]}`);
+          // Most labels in supermarkets range from 0.50 to 500
+          if (val > 0.40 && val < 1000) {
+            foundPrices.add(val);
+          }
+        }
+      };
+
+      // Search across lines and words for the best match
+      ((data as any).lines || []).forEach((l: any) => processText(l.text));
+      ((data as any).words || []).forEach((w: any) => processText(w.text));
+
+      const pricesArray = Array.from(foundPrices).sort((a, b) => b - a); // Sort desc as the biggest one is usually the total price
+
+      if (pricesArray.length === 0) {
+        throw new Error('Nenhum preço encontrado. Tente enquadrar os números grandes.');
+      }
+
+      setScannedName(productName);
+      setScannedResult({
+        suggestedName: productName,
+        prices: pricesArray
+      });
+      setSelectedScannedPrice(pricesArray[0]);
+
+    } catch (err) {
+      console.error(err);
+      setScannerError(err instanceof Error ? err.message : "Erro ao ler etiqueta.");
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const addItemFromScanner = () => {
+    if (!scannedResult || !selectedScannedPrice) return;
+
+    const finalName = scannedName.trim() || scannedResult.suggestedName || "Item Escaneado";
+    const newItem: ShoppingItem = {
+      id: crypto.randomUUID(),
+      name: finalName,
+      quantity: 1,
+      price: selectedScannedPrice,
+    };
+
+    setItems((prev) => [newItem, ...prev]);
+
+    // Cross out from Todo matching name
+    const normalizedNewName = normalizeString(finalName);
+    setTodoItems(prev => prev.map(todo => {
+      if (!todo.completed && normalizeString(todo.name) === normalizedNewName) {
+        return { ...todo, completed: true };
+      }
+      return todo;
+    }));
+
+    stopScanner();
   };
 
   const removeItem = (id: string) => {
@@ -216,6 +521,7 @@ export default function App() {
     const newPurchase: PurchaseHistory = {
       id: crypto.randomUUID(),
       date: new Date().toISOString(),
+      storeName: storeName.trim() || `Compra em ${new Date().toLocaleDateString('pt-BR')}`,
       items: [...items],
       total: totalGeneral,
     };
@@ -246,8 +552,110 @@ export default function App() {
     });
 
     setItems([]);
+    setStoreName("");
     localStorage.removeItem("shopping_list_current");
-    alert("Compra finalizada! Itens adicionados ao estoque.");
+    alert("Compra finalizada! Mercado registrado.");
+  };
+
+  // --- History Edit Actions ---
+  const saveHistoryEdit = (purchaseId: string, itemId: string) => {
+    setHistory(prev => {
+      const updated = prev.map(purchase => {
+        if (purchase.id === purchaseId) {
+          const updatedItems = purchase.items.map(item => {
+            if (item.id === itemId) {
+              return {
+                ...item,
+                name: editHistoryName,
+                quantity: parseFloat(editHistoryQuantity) || 0,
+                price: parseFloat(editHistoryPrice) || 0
+              };
+            }
+            return item;
+          });
+          const newTotal = updatedItems.reduce((acc, i) => acc + i.quantity * i.price, 0);
+          const updatedPurchase = { ...purchase, items: updatedItems, total: newTotal };
+          setSelectedHistory(updatedPurchase);
+          return updatedPurchase;
+        }
+        return purchase;
+      });
+      localStorage.setItem("shopping_history", JSON.stringify(updated));
+      return updated;
+    });
+    setEditHistoryItemId(null);
+  };
+
+  const removeHistoryItem = (purchaseId: string, itemId: string) => {
+    if (!confirm("Remover este item do histórico?")) return;
+    setHistory(prev => {
+      const updated = prev.map(purchase => {
+        if (purchase.id === purchaseId) {
+          const updatedItems = purchase.items.filter(i => i.id !== itemId);
+          const newTotal = updatedItems.reduce((acc, i) => acc + i.quantity * i.price, 0);
+          const updatedPurchase = { ...purchase, items: updatedItems, total: newTotal };
+          setSelectedHistory(updatedPurchase);
+          return updatedPurchase;
+        }
+        return purchase;
+      });
+      localStorage.setItem("shopping_history", JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  const addItemToHistory = (purchaseId: string) => {
+    if (!newHistItemName || !newHistItemQty || !newHistItemPrice) return;
+    const newItem: ShoppingItem = {
+      id: crypto.randomUUID(),
+      name: newHistItemName,
+      quantity: parseFloat(newHistItemQty) || 0,
+      price: parseFloat(newHistItemPrice) || 0
+    };
+
+    setHistory(prev => {
+      const updated = prev.map(purchase => {
+        if (purchase.id === purchaseId) {
+          const updatedItems = [...purchase.items, newItem];
+          const newTotal = updatedItems.reduce((acc, i) => acc + i.quantity * i.price, 0);
+          const updatedPurchase = { ...purchase, items: updatedItems, total: newTotal };
+          setSelectedHistory(updatedPurchase);
+          return updatedPurchase;
+        }
+        return purchase;
+      });
+      localStorage.setItem("shopping_history", JSON.stringify(updated));
+      return updated;
+    });
+
+    setNewHistItemName("");
+    setNewHistItemQty("");
+    setNewHistItemPrice("");
+    setIsAddingToHistory(false);
+  };
+
+  const saveHistoryStoreName = (purchaseId: string) => {
+    setHistory(prev => {
+      const updated = prev.map(purchase => {
+        if (purchase.id === purchaseId) {
+          const updatedPurchase = { ...purchase, storeName: editStoreName.trim() };
+          setSelectedHistory(updatedPurchase);
+          return updatedPurchase;
+        }
+        return purchase;
+      });
+      localStorage.setItem("shopping_history", JSON.stringify(updated));
+      return updated;
+    });
+    setIsEditingStoreName(false);
+  };
+
+  const deletePurchase = (purchaseId: string) => {
+    if (!confirm("Excluir esta compra permanentemente?")) return;
+    const newHistory = history.filter(h => h.id !== purchaseId);
+    setHistory(newHistory);
+    localStorage.setItem("shopping_history", JSON.stringify(newHistory));
+    setSelectedHistory(null);
   };
 
   // Inventory Actions
@@ -273,205 +681,31 @@ export default function App() {
     setInventory((prev) => prev.filter((item) => item.id !== id));
   };
 
-  // --- Scanner Logic ---
-  useEffect(() => {
-    let currentStream: MediaStream | null = null;
-
-    const initCamera = async () => {
-      if (isScannerOpen) {
-        try {
-          const constraints: MediaStreamConstraints = { 
-            video: { 
-              facingMode: { ideal: "environment" },
-              width: { ideal: 1280 },
-              height: { ideal: 720 }
-            } 
-          };
-          
-          let stream: MediaStream;
-          try {
-            stream = await navigator.mediaDevices.getUserMedia(constraints);
-          } catch (firstErr) {
-            console.warn("Falha ao abrir câmera traseira, tentando padrão:", firstErr);
-            // Fallback para qualquer câmera disponível (importante para PCs/Notebooks)
-            stream = await navigator.mediaDevices.getUserMedia({ video: true });
-          }
-
-          currentStream = stream;
-          if (videoRef.current) {
-            videoRef.current.srcObject = stream;
-          }
-        } catch (err) {
-          console.error("Erro total câmera:", err);
-          setScannerError("Não foi possível acessar a câmera. Tente recarregar a página ou verifique as permissões de privacidade.");
-        }
-      }
-    };
-
-    initCamera();
-
-    return () => {
-      if (currentStream) {
-        currentStream.getTracks().forEach(track => track.stop());
-      }
-    };
-  }, [isScannerOpen]);
-
-  const startScanner = async () => {
-    setIsScannerOpen(true);
-    setScannerError(null);
-    setScannedResult(null);
-    setScannedName("");
-    setSelectedScannedPrice(null);
-
-    // Inicializa o worker em background se ainda não existir
-    if (!workerRef.current) {
-      try {
-        const worker = await createWorker('por');
-        workerRef.current = worker;
-      } catch (e) {
-        console.error("Erro ao inicializar OCR:", e);
-      }
-    }
-  };
-
-  const stopScanner = async () => {
-    setIsScannerOpen(false);
-    setIsAnalyzing(false);
-    setScannedResult(null);
-
-    // Encerra o worker para liberar memória
-    if (workerRef.current) {
-      try {
-        await workerRef.current.terminate();
-        workerRef.current = null;
-      } catch (e) {
-        console.error("Erro ao fechar worker:", e);
-      }
-    }
-  };
-
-  const captureAndAnalyze = async () => {
-    if (!videoRef.current || !canvasRef.current) return;
-
-    const canvas = canvasRef.current;
-    const video = videoRef.current;
-    
-    // Validação de segurança: evita erro de "width or height of 0"
-    if (video.videoWidth === 0 || video.videoHeight === 0) {
-      setScannerError("Aguardando inicialização da câmera... Tente clicar novamente em instantes.");
-      return;
-    }
-    
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-    // Crop: Pegamos 95% da largura e aumentamos a altura para 80% para garantir captura de tudo
-    const cropWidth = canvas.width * 0.95;
-    const cropHeight = canvas.height * 0.8;
-    const cropX = (canvas.width - cropWidth) / 2;
-    const cropY = (canvas.height - cropHeight) / 2;
-
-    const cropCanvas = document.createElement('canvas');
-    cropCanvas.width = cropWidth;
-    cropCanvas.height = cropHeight;
-    const cropCtx = cropCanvas.getContext('2d');
-    if (cropCtx) {
-      // Filtros agressivos para Tesseract
-      cropCtx.filter = 'grayscale(1) contrast(2) brightness(1.1)';
-      cropCtx.drawImage(canvas, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
-    }
-
-    const imageData = cropCanvas.toDataURL("image/jpeg", 1.0);
-
-    setIsAnalyzing(true);
-    setScannerError(null);
-
-    try {
-      // Re-inicializa se foi fechado ou falhou
-      if (!workerRef.current) {
-        workerRef.current = await createWorker('por');
-      }
-
-      const { data } = await workerRef.current.recognize(imageData);
-      const text = data.text;
-
-      if (!text || text.trim().length === 0) {
-        throw new Error('Nenhum texto identificado. Tente melhorar a iluminação ou aproximar mais a câmera.');
-      }
-
-      // 1. EXTRAÇÃO DO NOME (Regra: Linha 1 + Linha 2)
-      const validLines = text.split('\n')
-        .map(l => l.trim())
-        .filter(l => {
-          const hasPrice = /(\d+[,.]\d{2})/.test(l);
-          return l.length >= 2 && !hasPrice && !/^[^a-zA-Z0-9]+$/.test(l);
-        });
-      
-      const productName = validLines.length >= 2 
-        ? `${validLines[0]} ${validLines[1]}`.trim()
-        : (validLines[0] || "");
-
-      // 2. EXTRAÇÃO DE PREÇOS (Regra: Ampliada para 0.90 a 99.00 para mais flexibilidade)
-      // O separador é opcional para capturar casos onde o OCR falha em ver a vírgula (ex: 499 vira 4.99)
-      const priceRegex = /(\d+)\s*[,.]?\s*(\d{2})\b/g;
-      const foundPrices = new Set<number>();
-
-      const processText = (itemText: string) => {
-        let match;
-        // Reinicia o lastIndex para garantir que o exec funcione corretamente
-        priceRegex.lastIndex = 0;
-        while ((match = priceRegex.exec(itemText)) !== null) {
-          const val = parseFloat(`${match[1]}.${match[2]}`);
-          // Filtro: Aceitamos de 0.90 a 99.00 para evitar erros com preços baixos ou promoções
-          if (val >= 0.90 && val <= 99.00) {
-            foundPrices.add(val);
-          }
-        }
-      };
-
-      // Executa a busca em palavras e linhas
-      ((data as any).words || []).forEach((w: any) => processText(w.text));
-      ((data as any).lines || []).forEach((l: any) => processText(l.text));
-
-      const pricesArray = Array.from(foundPrices).sort((a, b) => a - b);
-
-      if (pricesArray.length === 0) {
-        throw new Error('Nenhum preço válido (R$ 0,90 - R$ 99,00) foi identificado. Tente enquadrar melhor os números grandes.');
-      }
-
-      setScannedName(productName);
-      setScannedResult({
-        suggestedName: productName,
-        prices: pricesArray
-      });
-      // Seleciona o primeiro preço por padrão
-      setSelectedScannedPrice(pricesArray[0]);
-
-    } catch (err) {
-      console.error(err);
-      setScannerError(err instanceof Error ? err.message : "Erro ao processar imagem.");
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  const addItemFromScanner = () => {
-    if (!scannedResult || !selectedScannedPrice) return;
-
-    const newItem: ShoppingItem = {
+  // Todo List Actions
+  const handleAddTodo = (e: FormEvent) => {
+    e.preventDefault();
+    if (!todoName.trim()) return;
+    const newItem: TodoItem = {
       id: crypto.randomUUID(),
-      name: scannedName.trim() || scannedResult.suggestedName,
-      quantity: 1,
-      price: selectedScannedPrice,
+      name: todoName.trim(),
+      completed: false,
     };
+    setTodoItems(prev => [newItem, ...prev]);
+    setTodoName("");
+  };
 
-    setItems((prev) => [newItem, ...prev]);
-    stopScanner();
+  const toggleTodo = (id: string) => {
+    setTodoItems(prev => prev.map(item => 
+      item.id === id ? { ...item, completed: !item.completed } : item
+    ));
+  };
+
+  const removeTodo = (id: string) => {
+    setTodoItems(prev => prev.filter(item => item.id !== id));
+  };
+
+  const clearCompletedTodos = () => {
+    setTodoItems(prev => prev.filter(item => !item.completed));
   };
 
   const formatCurrency = (value: number) => {
@@ -563,6 +797,17 @@ export default function App() {
                       {formatCurrency(totalGeneral)}
                     </motion.h2>
                   </motion.div>
+
+                  <div className="mt-4 px-2">
+                    <label className="block text-[10px] uppercase font-bold text-slate-400 mb-1 ml-1">🏠 Nome do Mercado</label>
+                    <input
+                      type="text"
+                      placeholder="Ex: Atacadão, Assaí..."
+                      value={storeName}
+                      onChange={(e) => setStoreName(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all placeholder:text-slate-300 shadow-sm"
+                    />
+                  </div>
                 </header>
 
                 {/* Input Control Section */}
@@ -607,21 +852,23 @@ export default function App() {
                         </div>
                       </div>
                       <div className="flex gap-2">
-                        <motion.button
-                          whileTap={{ scale: 0.98 }}
-                          type="submit"
-                          className="flex-[2] bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-3 rounded-xl transition-colors shadow-lg shadow-emerald-200/50 flex items-center justify-center gap-2"
-                        >
-                          <Plus className="w-5 h-5 stroke-[3]" /> Adicionar
-                        </motion.button>
-                        <motion.button
-                          whileTap={{ scale: 0.98 }}
-                          type="button"
-                          onClick={startScanner}
-                          className="flex-1 bg-slate-800 hover:bg-black text-white font-bold py-3 rounded-xl transition-colors shadow-lg shadow-slate-200/50 flex items-center justify-center gap-2 text-[10px] uppercase tracking-tighter"
-                        >
-                          <Camera className="w-5 h-5" /> Escanear
-                        </motion.button>
+                        <div className="flex gap-2">
+                          <motion.button
+                            whileTap={{ scale: 0.98 }}
+                            type="submit"
+                            className="flex-[2] bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-3 rounded-xl transition-colors shadow-lg shadow-emerald-200/50 flex items-center justify-center gap-2"
+                          >
+                            <Plus className="w-5 h-5 stroke-[3]" /> Adicionar
+                          </motion.button>
+                          <motion.button
+                            whileTap={{ scale: 0.98 }}
+                            type="button"
+                            onClick={startScanner}
+                            className="flex-1 bg-slate-800 hover:bg-black text-white font-bold py-3 rounded-xl transition-colors shadow-lg shadow-slate-200/50 flex items-center justify-center gap-2 text-[10px] uppercase tracking-tighter"
+                          >
+                            <Camera className="w-5 h-5" /> Escanear
+                          </motion.button>
+                        </div>
                       </div>
                     </form>
                   </div>
@@ -712,8 +959,8 @@ export default function App() {
                                   </>
                                 ) : (
                                   <>
-                                    <button onClick={() => startEditing(item)} className="p-1 text-slate-300 hover:text-emerald-500 transition-colors opacity-0 group-hover:opacity-100"><Pencil className="w-3.5 h-3.5" /></button>
-                                    <button onClick={() => removeItem(item.id)} className="p-1 text-slate-200 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"><Trash2 className="w-3.5 h-3.5" /></button>
+                                    <button onClick={() => startEditing(item)} className="p-1 text-slate-300 hover:text-emerald-500 transition-colors"><Pencil className="w-3.5 h-3.5" /></button>
+                                    <button onClick={() => removeItem(item.id)} className="p-1 text-slate-200 hover:text-red-500 transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
                                   </>
                                 )}
                               </div>
@@ -737,28 +984,183 @@ export default function App() {
                   /* Detail view */
                   <div className="flex-1 flex flex-col overflow-hidden">
                     <header className="pt-12 px-6 pb-4 bg-slate-50 shrink-0 border-b border-slate-100">
-                      <button onClick={() => setSelectedHistory(null)} className="flex items-center gap-2 text-slate-400 hover:text-slate-600 transition-colors mb-4">
-                        <ArrowLeft className="w-4 h-4" />
-                        <span className="text-[10px] font-bold uppercase tracking-widest">Voltar</span>
-                      </button>
-                      <h2 className="text-xl font-black text-slate-800 leading-tight">Detalhes da Compra</h2>
+                      <div className="flex justify-between items-start mb-4">
+                        <button onClick={() => {
+                          setSelectedHistory(null);
+                          setIsAddingToHistory(false);
+                          setEditHistoryItemId(null);
+                          setIsEditingStoreName(false);
+                        }} className="flex items-center gap-2 text-slate-400 hover:text-slate-600 transition-colors">
+                          <ArrowLeft className="w-4 h-4" />
+                          <span className="text-[10px] font-bold uppercase tracking-widest">Voltar</span>
+                        </button>
+                        <button 
+                          onClick={() => deletePurchase(selectedHistory.id)}
+                          className="text-red-400 hover:text-red-600 transition-colors"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      {isEditingStoreName ? (
+                        <div className="flex gap-2">
+                          <input 
+                            type="text"
+                            value={editStoreName}
+                            onChange={(e) => setEditStoreName(e.target.value)}
+                            className="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-sm font-bold focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                            autoFocus
+                          />
+                          <button onClick={() => saveHistoryStoreName(selectedHistory.id)} className="text-emerald-500"><Check className="w-4 h-4 stroke-[3]" /></button>
+                          <button onClick={() => setIsEditingStoreName(false)} className="text-slate-400"><X className="w-4 h-4 stroke-[3]" /></button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 group">
+                          <h2 className="text-xl font-black text-slate-800 leading-tight capitalize">{selectedHistory.storeName}</h2>
+                          <button 
+                            onClick={() => {
+                              setIsEditingStoreName(true);
+                              setEditStoreName(selectedHistory.storeName);
+                            }}
+                            className="p-1 text-slate-300 hover:text-emerald-500 transition-colors"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
+                      
                       <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">
                         {formatDate(selectedHistory.date)}
                       </p>
                     </header>
-                    <div className="flex-1 overflow-y-auto px-6 py-6 space-y-3 no-scrollbar">
-                      {selectedHistory.items.map((item, idx) => (
-                        <div key={item.id} className="bg-white border border-slate-100 rounded-2xl p-4 flex justify-between items-center shadow-sm">
-                          <div>
-                            <p className="font-bold text-slate-800 text-sm">{item.name}</p>
-                            <p className="text-[10px] text-slate-400 font-bold uppercase">{item.quantity} un × {formatCurrency(item.price)}</p>
+
+                    <div className="flex-1 overflow-y-auto px-6 py-6 space-y-4 no-scrollbar">
+                      <div className="flex justify-between items-center px-1">
+                        <h3 className="text-[10px] font-black text-slate-800 uppercase tracking-widest">Itens da Compra ({selectedHistory.items.length})</h3>
+                        <button 
+                          onClick={() => setIsAddingToHistory(!isAddingToHistory)}
+                          className="flex items-center gap-1 text-[10px] font-black text-emerald-600 uppercase tracking-widest bg-emerald-50 px-2 py-1 rounded-lg"
+                        >
+                          <Plus className="w-3 h-3" /> Adicionar
+                        </button>
+                      </div>
+
+                      <AnimatePresence>
+                        {isAddingToHistory && (
+                          <motion.div 
+                            initial={{ opacity: 0, height: 0 }}
+                            animate={{ opacity: 1, height: "auto" }}
+                            exit={{ opacity: 0, height: 0 }}
+                            className="bg-slate-50 border border-slate-100 rounded-2xl p-4 overflow-hidden"
+                          >
+                            <div className="grid grid-cols-4 gap-2 mb-3">
+                              <input 
+                                type="text"
+                                placeholder="Item"
+                                value={newHistItemName}
+                                onChange={(e) => setNewHistItemName(e.target.value)}
+                                className="col-span-4 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold"
+                              />
+                              <input 
+                                type="number"
+                                placeholder="Qtd"
+                                value={newHistItemQty}
+                                onChange={(e) => setNewHistItemQty(e.target.value)}
+                                className="col-span-2 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold"
+                              />
+                              <input 
+                                type="number"
+                                placeholder="Preço"
+                                value={newHistItemPrice}
+                                onChange={(e) => setNewHistItemPrice(e.target.value)}
+                                className="col-span-2 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold"
+                              />
+                            </div>
+                            <div className="flex gap-2">
+                              <button 
+                                onClick={() => addItemToHistory(selectedHistory.id)}
+                                className="flex-1 bg-emerald-500 text-white text-[10px] font-black uppercase py-2.5 rounded-xl"
+                              >
+                                Adicionar Item Esquecido
+                              </button>
+                              <button 
+                                onClick={() => setIsAddingToHistory(false)}
+                                className="px-4 bg-slate-200 text-slate-600 text-[10px] font-black uppercase py-2.5 rounded-xl"
+                              >
+                                Cancelar
+                              </button>
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+
+                      <div className="space-y-3">
+                        {selectedHistory.items.map((item, idx) => (
+                          <div key={item.id} className="bg-white border border-slate-100 rounded-2xl p-4 flex justify-between items-center shadow-sm group">
+                            {editHistoryItemId === item.id ? (
+                              <div className="flex-1 space-y-2">
+                                <input 
+                                  type="text"
+                                  value={editHistoryName}
+                                  onChange={(e) => setEditHistoryName(e.target.value)}
+                                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs font-bold"
+                                />
+                                <div className="flex items-center gap-2">
+                                  <input 
+                                    type="number"
+                                    value={editHistoryQuantity}
+                                    onChange={(e) => setEditHistoryQuantity(e.target.value)}
+                                    className="w-16 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs font-bold"
+                                  />
+                                  <span className="text-[10px] text-slate-400">×</span>
+                                  <input 
+                                    type="number"
+                                    value={editHistoryPrice}
+                                    onChange={(e) => setEditHistoryPrice(e.target.value)}
+                                    className="w-24 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs font-bold"
+                                  />
+                                  <div className="flex-1" />
+                                  <button onClick={() => saveHistoryEdit(selectedHistory.id, item.id)} className="p-1 text-emerald-600"><Check className="w-5 h-5 stroke-[3]" /></button>
+                                  <button onClick={() => setEditHistoryItemId(null)} className="p-1 text-slate-400"><X className="w-5 h-5 stroke-[3]" /></button>
+                                </div>
+                              </div>
+                            ) : (
+                              <>
+                                <div className="flex-1 min-w-0 pr-2">
+                                  <p className="font-bold text-slate-800 text-sm truncate">{item.name}</p>
+                                  <p className="text-[10px] text-slate-400 font-bold uppercase">{item.quantity} un × {formatCurrency(item.price)}</p>
+                                </div>
+                                <div className="text-right flex flex-col items-end">
+                                  <p className="font-black text-slate-900 group-hover:text-emerald-600 transition-colors">{formatCurrency(item.quantity * item.price)}</p>
+                                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all mt-1">
+                                    <button 
+                                      onClick={() => {
+                                        setEditHistoryItemId(item.id);
+                                        setEditHistoryName(item.name);
+                                        setEditHistoryQuantity(item.quantity.toString());
+                                        setEditHistoryPrice(item.price.toString());
+                                      }}
+                                      className="p-1 text-slate-300 hover:text-emerald-500 transition-colors"
+                                    >
+                                      <Pencil className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button 
+                                      onClick={() => removeHistoryItem(selectedHistory.id, item.id)}
+                                      className="p-1 text-slate-300 hover:text-red-500 transition-colors"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </div>
+                              </>
+                            )}
                           </div>
-                          <p className="font-black text-slate-900">{formatCurrency(item.quantity * item.price)}</p>
-                        </div>
-                      ))}
-                      <div className="pt-4 border-t border-slate-100 mt-6 flex justify-between items-center px-2">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Gasto</span>
-                        <span className="text-xl font-black text-emerald-600">{formatCurrency(selectedHistory.total)}</span>
+                        ))}
+                      </div>
+
+                      <div className="pt-4 border-t border-slate-100 mt-6 flex justify-between items-center px-1">
+                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total da Compra</span>
+                        <span className="text-2xl font-black text-emerald-600">{formatCurrency(selectedHistory.total)}</span>
                       </div>
                     </div>
                   </div>
@@ -791,9 +1193,9 @@ export default function App() {
                               className="w-full flex items-center justify-between p-4 bg-white border border-slate-100 rounded-2xl shadow-sm hover:border-emerald-200 transition-all text-left group"
                             >
                               <div>
-                                <p className="font-bold text-slate-800 text-sm truncate w-40">Compra de {new Date(h.date).toLocaleDateString()}</p>
+                                <p className="font-bold text-slate-800 text-sm truncate w-40 group-hover:text-emerald-700 transition-colors capitalize">{h.storeName}</p>
                                 <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-bold uppercase mt-1">
-                                  <Calendar className="w-3 h-3" /> {new Date(h.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                  <Calendar className="w-3 h-3" /> {new Date(h.date).toLocaleDateString('pt-BR')} às {new Date(h.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                 </div>
                               </div>
                               <div className="flex items-center gap-3">
@@ -981,13 +1383,184 @@ export default function App() {
                        )}
                     </div>
                   </section>
+
+                  {/* Market Comparison Section */}
+                  <section>
+                    <div className="flex items-center gap-2 mb-3">
+                      <LayoutGrid className="w-4 h-4 text-slate-400" />
+                      <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide">Comparar Mercados</h3>
+                    </div>
+                    
+                    <div className="bg-white border border-slate-100 rounded-3xl p-5 shadow-sm space-y-4">
+                      <div className="grid grid-cols-1 gap-3">
+                        <div>
+                          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-1 ml-1">🛒 Mercado A (Base)</label>
+                          <select 
+                            value={compareId1}
+                            onChange={(e) => setCompareId1(e.target.value)}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500/20"
+                          >
+                            <option value="">Selecione uma compra...</option>
+                            {history.map(h => (
+                              <option key={h.id} value={h.id}>
+                                {new Date(h.date).toLocaleDateString()} - {h.storeName} ({formatCurrency(h.total)})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-1 ml-1">🛒 Mercado B (Comparação)</label>
+                          <select 
+                            value={compareId2}
+                            onChange={(e) => setCompareId2(e.target.value)}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500/20"
+                          >
+                             <option value="">Selecione outra compra...</option>
+                            {history.map(h => (
+                              <option key={h.id} value={h.id}>
+                                {new Date(h.date).toLocaleDateString()} - {h.storeName} ({formatCurrency(h.total)})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      {comparisonResult ? (
+                        <div className="pt-4 border-t border-slate-50 space-y-4">
+                          <div className="bg-slate-900 rounded-2xl p-4 text-center">
+                            <span className="text-[9px] text-slate-400 font-bold uppercase tracking-widest block mb-1">Diferença Total</span>
+                            <p className={`text-xl font-black tabular-nums ${comparisonResult.totalDiff > 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+                              {comparisonResult.totalDiff > 0 ? '+' : ''}{formatCurrency(comparisonResult.totalDiff)}
+                            </p>
+                            <p className="text-[10px] text-slate-500 font-medium">B em relação a A</p>
+                          </div>
+
+                          <div className="space-y-2">
+                            <h4 className="text-[10px] font-black text-slate-800 uppercase tracking-widest px-1">Itens Comuns ({comparisonResult.items.length})</h4>
+                            {comparisonResult.items.length === 0 ? (
+                              <p className="text-[10px] text-slate-300 italic text-center py-4 bg-slate-50 rounded-2xl">Nenhum item idêntico encontrado</p>
+                            ) : (
+                              comparisonResult.items.map((item, idx) => (
+                                <div key={idx} className="bg-slate-50 rounded-xl p-3 flex items-center justify-between">
+                                  <div className="flex-1 min-w-0">
+                                    <span className="font-bold text-slate-700 text-xs capitalize truncate block">{item.name}</span>
+                                    <div className="flex gap-2 text-[8px] font-black uppercase text-slate-400">
+                                      <span>A: {formatCurrency(item.price1)}</span>
+                                      <span>B: {formatCurrency(item.price2)}</span>
+                                    </div>
+                                  </div>
+                                  <div className={`shrink-0 font-black text-[10px] px-2 py-1 rounded-lg ${item.diff > 0 ? 'bg-red-100 text-red-600' : item.diff < 0 ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-100 text-slate-500'}`}>
+                                    {item.diff > 0 ? '+' : ''}{formatCurrency(item.diff)}
+                                  </div>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="py-8 flex flex-col items-center justify-center text-slate-300">
+                          <PieChart className="w-8 h-8 opacity-10 mb-2" />
+                          <p className="text-[10px] font-medium">Selecione duas compras para ver a economia real</p>
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                </div>
+              </motion.div>
+            ) : activeTab === "todo" ? (
+              <motion.div 
+                key="todo"
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: 10 }}
+                className="flex-1 flex flex-col overflow-hidden"
+              >
+                <header className="pt-12 px-6 pb-6 bg-gradient-to-b from-slate-50 to-white shrink-0">
+                  <h1 className="text-slate-400 text-[10px] font-bold tracking-widest uppercase mb-4">Minha Lista de Faltas</h1>
+                  <div className="bg-slate-800 rounded-3xl p-6 flex flex-col items-center justify-center shadow-xl">
+                    <span className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Itens a Comprar</span>
+                    <h2 className="text-3xl font-black text-white tabular-nums">
+                      {todoItems.filter(i => !i.completed).length} itens
+                    </h2>
+                  </div>
+                </header>
+
+                <div className="px-6 mb-4 shrink-0">
+                  <form onSubmit={handleAddTodo} className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="O que está faltando?"
+                      value={todoName}
+                      onChange={(e) => setTodoName(e.target.value)}
+                      className="flex-1 bg-white border border-slate-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all placeholder:text-slate-300"
+                    />
+                    <motion.button
+                      whileTap={{ scale: 0.95 }}
+                      type="submit"
+                      className="bg-emerald-500 text-white p-3 rounded-xl shadow-lg shadow-emerald-100 flex items-center justify-center"
+                    >
+                      <Plus className="w-6 h-6 stroke-[3]" />
+                    </motion.button>
+                  </form>
+                </div>
+
+                <div className="flex-1 px-6 overflow-hidden flex flex-col">
+                  <div className="flex justify-between items-center mb-3">
+                    <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide">Lista de Compras</h3>
+                    {todoItems.some(i => i.completed) && (
+                      <button 
+                        onClick={clearCompletedTodos}
+                        className="text-[9px] font-black text-red-400 uppercase tracking-widest hover:text-red-600 transition-colors"
+                      >
+                        Limpar Comprados
+                      </button>
+                    )}
+                  </div>
+                  
+                  <div className="flex-1 overflow-y-auto space-y-2 pb-6 no-scrollbar">
+                    {todoItems.length === 0 ? (
+                      <div className="py-20 flex flex-col items-center justify-center text-slate-300 bg-slate-50/50 rounded-2xl border border-dashed border-slate-100">
+                        <ShoppingBasket className="w-10 h-10 mb-2 opacity-10" />
+                        <p className="text-xs font-medium">Tudo em dia por aqui!</p>
+                      </div>
+                    ) : (
+                      todoItems.map((item) => (
+                        <motion.div
+                          key={item.id}
+                          layout
+                          className={`flex items-center gap-3 p-4 bg-white border border-slate-100 rounded-2xl shadow-sm transition-all ${item.completed ? 'opacity-50 grayscale' : ''}`}
+                        >
+                          <button 
+                            onClick={() => toggleTodo(item.id)}
+                            className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${item.completed ? 'bg-emerald-500 border-emerald-500' : 'border-slate-200 hover:border-emerald-400'}`}
+                          >
+                            {item.completed && <Check className="w-4 h-4 text-white stroke-[4]" />}
+                          </button>
+                          
+                          <span 
+                            onClick={() => toggleTodo(item.id)}
+                            className={`flex-1 text-sm font-bold text-slate-700 cursor-pointer ${item.completed ? 'line-through text-slate-400' : ''}`}
+                          >
+                            {item.name}
+                          </span>
+
+                          <button 
+                            onClick={() => removeTodo(item.id)}
+                            className="p-1 text-slate-200 hover:text-red-500 transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </motion.div>
+                      ))
+                    )}
+                  </div>
                 </div>
               </motion.div>
             ) : (
-              /* Settings/Placeholder */
+              /* Settings/Placeholder - Fallback */
               <motion.div key="settings" className="flex-1 flex flex-col items-center justify-center text-slate-300 gap-4">
                 <Settings className="w-12 h-12 opacity-10" />
-                <p className="text-xs font-medium">Configurações em breve</p>
+                <p className="text-xs font-medium">Configurações</p>
               </motion.div>
             )}
           </AnimatePresence>
@@ -1024,11 +1597,11 @@ export default function App() {
             <span className="text-[7px] font-black uppercase tracking-tighter">Histórico</span>
           </button>
           <button 
-            onClick={() => setActiveTab("settings")}
-            className={`transition-all duration-300 flex flex-col items-center gap-1 flex-1 ${activeTab === "settings" ? "text-emerald-500 scale-105" : "text-slate-300 hover:text-slate-400"}`}
+            onClick={() => setActiveTab("todo")}
+            className={`transition-all duration-300 flex flex-col items-center gap-1 flex-1 ${activeTab === "todo" ? "text-emerald-500 scale-105" : "text-slate-300 hover:text-slate-400"}`}
           >
-            <Settings className="w-5 h-5 flex-shrink-0" />
-            <span className="text-[7px] font-black uppercase tracking-tighter">Opções</span>
+            <ListTodo className="w-5 h-5 flex-shrink-0" />
+            <span className="text-[7px] font-black uppercase tracking-tighter">A Comprar</span>
           </button>
         </nav>
 
