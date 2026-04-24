@@ -6,7 +6,15 @@
 import { useState, useMemo, FormEvent, useEffect, useRef } from "react";
 import { Plus, Trash2, LayoutGrid, User, Settings, Pencil, Check, X, CheckCircle2, Clock, ChevronRight, ArrowLeft, Calendar, Box, Minus, Play, History, TrendingUp, TrendingDown, BarChart3, PieChart, Sparkles, TrendingUp as TrendingUpIcon, TrendingDown as TrendingDownIcon, ListTodo, ShoppingBasket, Camera, Scan, Loader2, XCircle } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { createWorker } from "tesseract.js";
+import { GoogleGenAI, Type } from "@google/genai";
+
+const getAI = () => {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error("Gemini API Key is not configured. Please ensure it is set in the environment.");
+  }
+  return new GoogleGenAI({ apiKey });
+};
 
 interface ShoppingItem {
   id: string;
@@ -89,12 +97,11 @@ export default function App() {
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const workerRef = useRef<any>(null);
 
   // Smart Add (Scanner) states
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [scannedResult, setScannedResult] = useState<{ suggestedName: string, prices: number[] } | null>(null);
+  const [scannedResult, setScannedResult] = useState<{ suggestedName: string, prices: { label: string, value: number }[] } | null>(null);
   const [scannedName, setScannedName] = useState("");
   const [selectedScannedPrice, setSelectedScannedPrice] = useState<number | null>(null);
   const [scannerError, setScannerError] = useState<string | null>(null);
@@ -333,31 +340,12 @@ export default function App() {
     setScannedResult(null);
     setScannedName("");
     setSelectedScannedPrice(null);
-
-    // Load worker immediately to reduce delay
-    if (!workerRef.current) {
-      try {
-        const worker = await createWorker('por');
-        workerRef.current = worker;
-      } catch (e) {
-        console.error("Erro ao inicializar OCR:", e);
-      }
-    }
   };
 
   const stopScanner = async () => {
     setIsScannerOpen(false);
     setIsAnalyzing(false);
     setScannedResult(null);
-
-    if (workerRef.current) {
-      try {
-        await workerRef.current.terminate();
-        workerRef.current = null;
-      } catch (e) {
-        console.error("Erro ao fechar worker:", e);
-      }
-    }
   };
 
   const captureAndAnalyze = async () => {
@@ -378,7 +366,7 @@ export default function App() {
 
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // Improved Focus Area
+    // Focus Area
     const cropWidth = canvas.width * 0.9;
     const cropHeight = canvas.height * 0.8;
     const cropX = (canvas.width - cropWidth) / 2;
@@ -389,8 +377,6 @@ export default function App() {
     cropCanvas.height = cropHeight;
     const cropCtx = cropCanvas.getContext('2d');
     if (cropCtx) {
-      // Grayscale + High Contrast for shelf labels
-      cropCtx.filter = 'grayscale(1) contrast(2.5) brightness(1.1)';
       cropCtx.drawImage(canvas, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
     }
 
@@ -400,65 +386,61 @@ export default function App() {
     setScannerError(null);
 
     try {
-      if (!workerRef.current) {
-        workerRef.current = await createWorker('por');
-      }
-
-      const { data } = await workerRef.current.recognize(imageData);
-      const text = data.text;
-
-      if (!text || text.trim().length === 0) {
-        throw new Error('Nenhum texto identificado. Aproxime mais e evite reflexos.');
-      }
-
-      // Parser for Product Name (Usually the first few lines are the name)
-      const validLines = text.split('\n')
-        .map(l => l.trim())
-        .filter(l => {
-          const hasPrice = /(\d+[,.]\d{2})/.test(l);
-          return l.length >= 3 && !hasPrice && !/^[^a-zA-Z0-9]+$/.test(l);
-        });
+      const aiInstance = getAI();
+      const base64Image = imageData.split(',')[1];
       
-      const productName = validLines.length >= 2 
-        ? `${validLines[0]} ${validLines[1]}`.trim()
-        : (validLines[0] || "");
-
-      // Parser for Prices (Optimized for Brazil R$ formats on labels)
-      const priceRegex = /(\d+)\s*[,.]\s*(\d{2})/g;
-      const foundPrices = new Set<number>();
-
-      const processText = (itemText: string) => {
-        let match;
-        priceRegex.lastIndex = 0;
-        while ((match = priceRegex.exec(itemText)) !== null) {
-          const val = parseFloat(`${match[1]}.${match[2]}`);
-          // Most labels in supermarkets range from 0.50 to 500
-          if (val > 0.40 && val < 1000) {
-            foundPrices.add(val);
+      const response = await aiInstance.models.generateContent({
+        model: "gemini-3.1-pro-preview",
+        contents: [{
+          parts: [
+            { inlineData: { mimeType: "image/jpeg", data: base64Image } },
+            { text: "Analyze this supermarket shelf label. Identify the product name and ALL prices found. Distinguish between 'Varejo' (Retail) and 'Atacado' (Wholesale/Bulk) if possible. Return ONLY a JSON object: { \"productName\": \"...\", \"prices\": [ { \"label\": \"Varejo\", \"value\": 0.0 }, { \"label\": \"Atacado\", \"value\": 0.0 } ] }. No markdown formatting." }
+          ]
+        }],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              productName: { type: Type.STRING },
+              prices: { 
+                type: Type.ARRAY,
+                items: { 
+                  type: Type.OBJECT,
+                  properties: {
+                    label: { type: Type.STRING },
+                    value: { type: Type.NUMBER }
+                  }
+                }
+              }
+            }
           }
         }
-      };
+      });
 
-      // Search across lines and words for the best match
-      ((data as any).lines || []).forEach((l: any) => processText(l.text));
-      ((data as any).words || []).forEach((w: any) => processText(w.text));
-
-      const pricesArray = Array.from(foundPrices).sort((a, b) => b - a); // Sort desc as the biggest one is usually the total price
-
-      if (pricesArray.length === 0) {
-        throw new Error('Nenhum preço encontrado. Tente enquadrar os números grandes.');
+      const resultString = response.text || "{}";
+      const result = JSON.parse(resultString.replace(/```json/g, '').replace(/```/g, '').trim());
+      
+      if (!result.productName && (!result.prices || result.prices.length === 0)) {
+        throw new Error("Não foi possível detectar o produto ou preço. Tente aproximar mais a câmera ou evitar reflexos.");
       }
 
-      setScannedName(productName);
-      setScannedResult({
-        suggestedName: productName,
-        prices: pricesArray
-      });
-      setSelectedScannedPrice(pricesArray[0]);
+      const rawPrices = (result.prices || []);
+      const validPrices = rawPrices.length > 0 
+        ? rawPrices.filter((p: any) => typeof p.value === 'number' && p.value > 0)
+        : [];
+      
+      const name = (result.productName || "Item Identificado").trim();
 
+      setScannedName(name);
+      setScannedResult({
+        suggestedName: name,
+        prices: validPrices.length > 0 ? validPrices : [{ label: "Preço", value: 0 }]
+      });
+      setSelectedScannedPrice(validPrices.length > 0 ? validPrices[0].value : 0);
     } catch (err) {
-      console.error(err);
-      setScannerError(err instanceof Error ? err.message : "Erro ao ler etiqueta.");
+      console.error("Analysis Error:", err);
+      setScannerError(err instanceof Error ? err.message : "Erro ao analisar imagem.");
     } finally {
       setIsAnalyzing(false);
     }
@@ -1615,9 +1597,11 @@ export default function App() {
               className="absolute inset-0 bg-black z-50 flex flex-col pt-12"
             >
               <div className="flex justify-between items-center px-6 mb-4">
-                <h3 className="text-white text-xs font-bold uppercase tracking-widest flex items-center gap-2">
-                  <Scan className="w-4 h-4 text-emerald-400" /> Leitor de Etiqueta
-                </h3>
+                <div className="flex flex-col">
+                  <h3 className="text-white text-xs font-bold uppercase tracking-widest flex items-center gap-2">
+                    <Scan className="w-4 h-4 text-emerald-400" /> Leitor Gemini Vision
+                  </h3>
+                </div>
                 <button onClick={stopScanner} className="text-white/50 hover:text-white transition-colors">
                   <XCircle className="w-6 h-6" />
                 </button>
@@ -1703,17 +1687,17 @@ export default function App() {
                           {scannedResult.prices.map((p, idx) => (
                             <button
                               key={idx}
-                              onClick={() => setSelectedScannedPrice(p)}
+                              onClick={() => setSelectedScannedPrice(p.value)}
                               className={`w-full py-3 px-4 rounded-2xl flex justify-between items-center transition-all ${
-                                selectedScannedPrice === p 
+                                selectedScannedPrice === p.value 
                                 ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-200 border-2 border-emerald-500' 
                                 : 'bg-slate-50 text-slate-600 border-2 border-slate-100'
                               }`}
                             >
                               <span className="text-[10px] font-black uppercase tracking-wider">
-                                {selectedScannedPrice === p ? 'Selecionado' : `Opção ${idx + 1}`}
+                                {p.label}
                               </span>
-                              <span className="text-sm font-black">{formatCurrency(p)}</span>
+                              <span className="text-sm font-black">{formatCurrency(p.value)}</span>
                             </button>
                           ))}
                         </div>
@@ -1749,8 +1733,11 @@ export default function App() {
                 )}
               </div>
 
-              <div className="p-8 text-center">
-                <p className="text-white/30 text-[9px] font-bold uppercase tracking-widest">Processamento local de imagem via OCR</p>
+              <div className="p-8 text-center flex flex-col items-center gap-2">
+                <div className="flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-full">
+                  <Sparkles className="w-2.5 h-2.5 text-emerald-400" />
+                  <span className="text-[7px] text-emerald-400 font-black uppercase tracking-tighter">Análise Avançada por Gemini 3.1 Pro</span>
+                </div>
               </div>
 
               <canvas ref={canvasRef} className="hidden" />
