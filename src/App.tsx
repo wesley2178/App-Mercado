@@ -3,18 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useMemo, FormEvent, useEffect, useRef } from "react";
-import { Plus, Trash2, LayoutGrid, User, Settings, Pencil, Check, X, CheckCircle2, Clock, ChevronRight, ArrowLeft, Calendar, Box, Minus, Play, History, TrendingUp, TrendingDown, BarChart3, PieChart, Sparkles, TrendingUp as TrendingUpIcon, TrendingDown as TrendingDownIcon, ListTodo, ShoppingBasket, Camera, Scan, Loader2, XCircle } from "lucide-react";
+import { useState, useMemo, FormEvent, useEffect } from "react";
+import { Plus, Trash2, LayoutGrid, Settings, Pencil, Check, X, CheckCircle2, Clock, ChevronRight, ArrowLeft, Calendar, Box, Minus, Play, TrendingUp, TrendingDown, BarChart3, PieChart, ListTodo, ShoppingBasket } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { GoogleGenAI, Type } from "@google/genai";
-
-const getAI = () => {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error("Gemini API Key is not configured. Please ensure it is set in the environment.");
-  }
-  return new GoogleGenAI({ apiKey });
-};
 
 interface ShoppingItem {
   id: string;
@@ -94,17 +85,6 @@ export default function App() {
   // Todo List states (What's missing)
   const [todoItems, setTodoItems] = useState<TodoItem[]>([]);
   const [todoName, setTodoName] = useState("");
-
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-
-  // Smart Add (Scanner) states
-  const [isScannerOpen, setIsScannerOpen] = useState(false);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [scannedResult, setScannedResult] = useState<{ suggestedName: string, prices: { label: string, value: number }[] } | null>(null);
-  const [scannedName, setScannedName] = useState("");
-  const [selectedScannedPrice, setSelectedScannedPrice] = useState<number | null>(null);
-  const [scannerError, setScannerError] = useState<string | null>(null);
 
   // Load from localStorage on mount
   useEffect(() => {
@@ -269,206 +249,6 @@ export default function App() {
     setName("");
     setQuantity("");
     setPrice("");
-  };
-
-  // --- Scanner Logic ---
-  useEffect(() => {
-    let currentStream: MediaStream | null = null;
-
-    const initCamera = async () => {
-      if (isScannerOpen) {
-        try {
-          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            throw new Error("Seu navegador não suporta acesso à câmera.");
-          }
-
-          let stream: MediaStream;
-          
-          // Tenta primeiro com as configurações ideais (câmera traseira)
-          try {
-            const constraints: MediaStreamConstraints = { 
-              video: { 
-                facingMode: { ideal: "environment" },
-                width: { ideal: 1280 },
-                height: { ideal: 720 }
-              } 
-            };
-            stream = await navigator.mediaDevices.getUserMedia(constraints);
-          } catch (firstErr) {
-            console.warn("Falha ao abrir câmera com restrições ideais, tentando genérico:", firstErr);
-            // Fallback: Tentativa ultra-genérica (qualquer câmera)
-            stream = await navigator.mediaDevices.getUserMedia({ video: true });
-          }
-
-          currentStream = stream;
-          if (videoRef.current) {
-            videoRef.current.srcObject = stream;
-            // Safari mobile precisa do play() explícito às vezes mesmo com autoPlay
-            videoRef.current.play().catch(e => console.error("Erro ao dar play no vídeo:", e));
-          }
-        } catch (err) {
-          console.error("Erro total câmera:", err);
-          let userMsg = "Não foi possível acessar a câmera.";
-          
-          if (err instanceof Error) {
-            if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
-              userMsg = "Permissão da câmera negada. Verifique as configurações do seu navegador.";
-            } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
-              userMsg = "Nenhuma câmera encontrada no seu dispositivo.";
-            } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
-              userMsg = "A câmera já está sendo usada por outro aplicativo.";
-            }
-          }
-          
-          setScannerError(userMsg + " Tente recarregar a página ou usar em um navegador moderno.");
-        }
-      }
-    };
-
-    initCamera();
-
-    return () => {
-      if (currentStream) {
-        currentStream.getTracks().forEach(track => track.stop());
-      }
-    };
-  }, [isScannerOpen]);
-
-  const startScanner = async () => {
-    setIsScannerOpen(true);
-    setScannerError(null);
-    setScannedResult(null);
-    setScannedName("");
-    setSelectedScannedPrice(null);
-  };
-
-  const stopScanner = async () => {
-    setIsScannerOpen(false);
-    setIsAnalyzing(false);
-    setScannedResult(null);
-  };
-
-  const captureAndAnalyze = async () => {
-    if (!videoRef.current || !canvasRef.current) return;
-
-    const canvas = canvasRef.current;
-    const video = videoRef.current;
-    
-    if (video.videoWidth === 0 || video.videoHeight === 0) {
-      setScannerError("Aguardando câmera...");
-      return;
-    }
-    
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-    // Focus Area
-    const cropWidth = canvas.width * 0.9;
-    const cropHeight = canvas.height * 0.8;
-    const cropX = (canvas.width - cropWidth) / 2;
-    const cropY = (canvas.height - cropHeight) / 2;
-
-    const cropCanvas = document.createElement('canvas');
-    cropCanvas.width = cropWidth;
-    cropCanvas.height = cropHeight;
-    const cropCtx = cropCanvas.getContext('2d');
-    if (cropCtx) {
-      cropCtx.drawImage(canvas, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
-    }
-
-    const imageData = cropCanvas.toDataURL("image/jpeg", 0.95);
-
-    setIsAnalyzing(true);
-    setScannerError(null);
-
-    try {
-      const aiInstance = getAI();
-      const base64Image = imageData.split(',')[1];
-      
-      const response = await aiInstance.models.generateContent({
-        model: "gemini-3.1-pro-preview",
-        contents: [{
-          parts: [
-            { inlineData: { mimeType: "image/jpeg", data: base64Image } },
-            { text: "Analyze this supermarket shelf label. Identify the product name and ALL prices found. Distinguish between 'Varejo' (Retail) and 'Atacado' (Wholesale/Bulk) if possible. Return ONLY a JSON object: { \"productName\": \"...\", \"prices\": [ { \"label\": \"Varejo\", \"value\": 0.0 }, { \"label\": \"Atacado\", \"value\": 0.0 } ] }. No markdown formatting." }
-          ]
-        }],
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              productName: { type: Type.STRING },
-              prices: { 
-                type: Type.ARRAY,
-                items: { 
-                  type: Type.OBJECT,
-                  properties: {
-                    label: { type: Type.STRING },
-                    value: { type: Type.NUMBER }
-                  }
-                }
-              }
-            }
-          }
-        }
-      });
-
-      const resultString = response.text || "{}";
-      const result = JSON.parse(resultString.replace(/```json/g, '').replace(/```/g, '').trim());
-      
-      if (!result.productName && (!result.prices || result.prices.length === 0)) {
-        throw new Error("Não foi possível detectar o produto ou preço. Tente aproximar mais a câmera ou evitar reflexos.");
-      }
-
-      const rawPrices = (result.prices || []);
-      const validPrices = rawPrices.length > 0 
-        ? rawPrices.filter((p: any) => typeof p.value === 'number' && p.value > 0)
-        : [];
-      
-      const name = (result.productName || "Item Identificado").trim();
-
-      setScannedName(name);
-      setScannedResult({
-        suggestedName: name,
-        prices: validPrices.length > 0 ? validPrices : [{ label: "Preço", value: 0 }]
-      });
-      setSelectedScannedPrice(validPrices.length > 0 ? validPrices[0].value : 0);
-    } catch (err) {
-      console.error("Analysis Error:", err);
-      setScannerError(err instanceof Error ? err.message : "Erro ao analisar imagem.");
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  const addItemFromScanner = () => {
-    if (!scannedResult || !selectedScannedPrice) return;
-
-    const finalName = scannedName.trim() || scannedResult.suggestedName || "Item Escaneado";
-    const newItem: ShoppingItem = {
-      id: crypto.randomUUID(),
-      name: finalName,
-      quantity: 1,
-      price: selectedScannedPrice,
-    };
-
-    setItems((prev) => [newItem, ...prev]);
-
-    // Cross out from Todo matching name
-    const normalizedNewName = normalizeString(finalName);
-    setTodoItems(prev => prev.map(todo => {
-      if (!todo.completed && normalizeString(todo.name) === normalizedNewName) {
-        return { ...todo, completed: true };
-      }
-      return todo;
-    }));
-
-    stopScanner();
   };
 
   const removeItem = (id: string) => {
@@ -740,14 +520,11 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-100 flex items-center justify-center font-sans p-4">
-      {/* App Frame (Mobile Simulation) */}
-      <div className="w-[380px] h-[720px] bg-white rounded-[48px] shadow-2xl relative overflow-hidden border-[8px] border-slate-800 flex flex-col">
-        {/* Notch */}
-        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-40 h-7.5 bg-slate-800 rounded-b-2xl z-20" />
-
+    <div className="h-full bg-white font-sans flex flex-col overflow-hidden">
+      {/* Container adaptado para mobile real */}
+      <div className="flex-1 overflow-hidden flex flex-col relative">
         {/* Dynamic Content based on Tab */}
-        <div className="flex-1 overflow-hidden flex flex-col">
+        <div className="flex-1 overflow-hidden flex flex-col pt-safe">
           
           <AnimatePresence mode="wait">
             {activeTab === "current" ? (
@@ -759,7 +536,7 @@ export default function App() {
                 className="flex-1 flex flex-col overflow-hidden"
               >
                 {/* Header Section */}
-                <header className="pt-12 px-6 pb-4 bg-gradient-to-b from-slate-50 to-white shrink-0">
+                <header className="pt-4 px-6 pb-4 bg-gradient-to-b from-slate-50 to-white shrink-0">
                   <div className="flex justify-between items-end mb-4">
                     <h1 className="text-slate-400 text-[10px] font-bold tracking-widest uppercase">Minha Compra</h1>
                     <span className="text-[10px] text-slate-400 font-medium tracking-tighter">LISTA ATUAL</span>
@@ -834,23 +611,13 @@ export default function App() {
                         </div>
                       </div>
                       <div className="flex gap-2">
-                        <div className="flex gap-2">
-                          <motion.button
-                            whileTap={{ scale: 0.98 }}
-                            type="submit"
-                            className="flex-[2] bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-3 rounded-xl transition-colors shadow-lg shadow-emerald-200/50 flex items-center justify-center gap-2"
-                          >
-                            <Plus className="w-5 h-5 stroke-[3]" /> Adicionar
-                          </motion.button>
-                          <motion.button
-                            whileTap={{ scale: 0.98 }}
-                            type="button"
-                            onClick={startScanner}
-                            className="flex-1 bg-slate-800 hover:bg-black text-white font-bold py-3 rounded-xl transition-colors shadow-lg shadow-slate-200/50 flex items-center justify-center gap-2 text-[10px] uppercase tracking-tighter"
-                          >
-                            <Camera className="w-5 h-5" /> Escanear
-                          </motion.button>
-                        </div>
+                        <motion.button
+                          whileTap={{ scale: 0.98 }}
+                          type="submit"
+                          className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-3 rounded-xl transition-colors shadow-lg shadow-emerald-200/50 flex items-center justify-center gap-2"
+                        >
+                          <Plus className="w-5 h-5 stroke-[3]" /> Adicionar
+                        </motion.button>
                       </div>
                     </form>
                   </div>
@@ -965,7 +732,7 @@ export default function App() {
                 {selectedHistory ? (
                   /* Detail view */
                   <div className="flex-1 flex flex-col overflow-hidden">
-                    <header className="pt-12 px-6 pb-4 bg-slate-50 shrink-0 border-b border-slate-100">
+                    <header className="pt-4 px-6 pb-4 bg-slate-50 shrink-0 border-b border-slate-100">
                       <div className="flex justify-between items-start mb-4">
                         <button onClick={() => {
                           setSelectedHistory(null);
@@ -1149,7 +916,7 @@ export default function App() {
                 ) : (
                   /* History List */
                   <div className="flex-1 flex flex-col overflow-hidden">
-                    <header className="pt-12 px-6 pb-6 bg-gradient-to-b from-slate-50 to-white shrink-0">
+                    <header className="pt-4 px-6 pb-6 bg-gradient-to-b from-slate-50 to-white shrink-0">
                       <h1 className="text-slate-400 text-[10px] font-bold tracking-widest uppercase mb-4">Meus Gasto</h1>
                       <div className="bg-slate-800 rounded-3xl p-6 flex flex-col items-center justify-center shadow-xl">
                         <span className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Média Mensal</span>
@@ -1203,7 +970,7 @@ export default function App() {
                 exit={{ opacity: 0, x: 10 }}
                 className="flex-1 flex flex-col overflow-hidden"
               >
-                <header className="pt-12 px-6 pb-6 bg-gradient-to-b from-slate-50 to-white shrink-0">
+                <header className="pt-4 px-6 pb-6 bg-gradient-to-b from-slate-50 to-white shrink-0">
                   <h1 className="text-slate-400 text-[10px] font-bold tracking-widest uppercase mb-4">Minha Despensa</h1>
                   <div className="bg-slate-800 rounded-3xl p-6 flex flex-col items-center justify-center shadow-xl">
                     <span className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Total de Itens</span>
@@ -1280,7 +1047,7 @@ export default function App() {
                 exit={{ opacity: 0, x: 10 }}
                 className="flex-1 flex flex-col overflow-hidden"
               >
-                <header className="pt-12 px-6 pb-6 bg-gradient-to-b from-slate-50 to-white shrink-0">
+                <header className="pt-4 px-6 pb-6 bg-gradient-to-b from-slate-50 to-white shrink-0">
                   <h1 className="text-slate-400 text-[10px] font-bold tracking-widest uppercase mb-4">Resumo Financeiro</h1>
                   
                   <div className="grid grid-cols-2 gap-3">
@@ -1457,7 +1224,7 @@ export default function App() {
                 exit={{ opacity: 0, x: 10 }}
                 className="flex-1 flex flex-col overflow-hidden"
               >
-                <header className="pt-12 px-6 pb-6 bg-gradient-to-b from-slate-50 to-white shrink-0">
+                <header className="pt-4 px-6 pb-6 bg-gradient-to-b from-slate-50 to-white shrink-0">
                   <h1 className="text-slate-400 text-[10px] font-bold tracking-widest uppercase mb-4">Minha Lista de Faltas</h1>
                   <div className="bg-slate-800 rounded-3xl p-6 flex flex-col items-center justify-center shadow-xl">
                     <span className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Itens a Comprar</span>
@@ -1549,201 +1316,43 @@ export default function App() {
         </div>
 
         {/* Bottom Navigation */}
-        <nav className="px-4 pb-8 pt-4 flex justify-between border-t border-slate-50 bg-white shrink-0 z-30">
+        <nav className="px-4 pb-safe pt-4 flex justify-between border-t border-slate-50 bg-white shrink-0 z-30 shadow-[0_-5px_15px_rgba(0,0,0,0.02)]">
           <button 
             onClick={() => { setActiveTab("current"); setSelectedHistory(null); }}
-            className={`transition-all duration-300 flex flex-col items-center gap-1 flex-1 ${activeTab === "current" ? "text-emerald-500 scale-105" : "text-slate-300 hover:text-slate-400"}`}
+            className={`transition-all duration-300 flex flex-col items-center gap-1.5 flex-1 py-1 ${activeTab === "current" ? "text-emerald-500 scale-105" : "text-slate-300 active:text-slate-400"}`}
           >
-            <LayoutGrid className="w-5 h-5 flex-shrink-0" />
-            <span className="text-[7px] font-black uppercase tracking-tighter">Lista</span>
+            <LayoutGrid className="w-6 h-6 flex-shrink-0" />
+            <span className="text-[8px] font-black uppercase tracking-tighter">Lista</span>
           </button>
           <button 
             onClick={() => { setActiveTab("inventory"); setSelectedHistory(null); }}
-            className={`transition-all duration-300 flex flex-col items-center gap-1 flex-1 ${activeTab === "inventory" ? "text-emerald-500 scale-105" : "text-slate-300 hover:text-slate-400"}`}
+            className={`transition-all duration-300 flex flex-col items-center gap-1.5 flex-1 py-1 ${activeTab === "inventory" ? "text-emerald-500 scale-105" : "text-slate-300 active:text-slate-400"}`}
           >
-            <Box className="w-5 h-5 flex-shrink-0" />
-            <span className="text-[7px] font-black uppercase tracking-tighter">Estoque</span>
+            <Box className="w-6 h-6 flex-shrink-0" />
+            <span className="text-[8px] font-black uppercase tracking-tighter">Estoque</span>
           </button>
           <button 
             onClick={() => { setActiveTab("summary"); setSelectedHistory(null); }}
-            className={`transition-all duration-300 flex flex-col items-center gap-1 flex-1 ${activeTab === "summary" ? "text-emerald-500 scale-105" : "text-slate-300 hover:text-slate-400"}`}
+            className={`transition-all duration-300 flex flex-col items-center gap-1.5 flex-1 py-1 ${activeTab === "summary" ? "text-emerald-500 scale-105" : "text-slate-300 active:text-slate-400"}`}
           >
-            <PieChart className="w-5 h-5 flex-shrink-0" />
-            <span className="text-[7px] font-black uppercase tracking-tighter">Resumo</span>
+            <PieChart className="w-6 h-6 flex-shrink-0" />
+            <span className="text-[8px] font-black uppercase tracking-tighter">Resumo</span>
           </button>
           <button 
             onClick={() => { setActiveTab("history"); setSelectedHistory(null); }}
-            className={`transition-all duration-300 flex flex-col items-center gap-1 flex-1 ${activeTab === "history" ? "text-emerald-500 scale-105" : "text-slate-300 hover:text-slate-400"}`}
+            className={`transition-all duration-300 flex flex-col items-center gap-1.5 flex-1 py-1 ${activeTab === "history" ? "text-emerald-500 scale-105" : "text-slate-300 active:text-slate-400"}`}
           >
-            <Clock className="w-5 h-5 flex-shrink-0" />
-            <span className="text-[7px] font-black uppercase tracking-tighter">Histórico</span>
+            <Clock className="w-6 h-6 flex-shrink-0" />
+            <span className="text-[8px] font-black uppercase tracking-tighter">Histórico</span>
           </button>
           <button 
             onClick={() => setActiveTab("todo")}
-            className={`transition-all duration-300 flex flex-col items-center gap-1 flex-1 ${activeTab === "todo" ? "text-emerald-500 scale-105" : "text-slate-300 hover:text-slate-400"}`}
+            className={`transition-all duration-300 flex flex-col items-center gap-1.5 flex-1 py-1 ${activeTab === "todo" ? "text-emerald-500 scale-105" : "text-slate-300 active:text-slate-400"}`}
           >
-            <ListTodo className="w-5 h-5 flex-shrink-0" />
-            <span className="text-[7px] font-black uppercase tracking-tighter">A Comprar</span>
+            <ListTodo className="w-6 h-6 flex-shrink-0" />
+            <span className="text-[8px] font-black uppercase tracking-tighter">A Comprar</span>
           </button>
         </nav>
-
-        {/* Scanner Overlay */}
-        <AnimatePresence>
-          {isScannerOpen && (
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-black z-50 flex flex-col pt-12"
-            >
-              <div className="flex justify-between items-center px-6 mb-4">
-                <div className="flex flex-col">
-                  <h3 className="text-white text-xs font-bold uppercase tracking-widest flex items-center gap-2">
-                    <Scan className="w-4 h-4 text-emerald-400" /> Leitor Gemini Vision
-                  </h3>
-                </div>
-                <button onClick={stopScanner} className="text-white/50 hover:text-white transition-colors">
-                  <XCircle className="w-6 h-6" />
-                </button>
-              </div>
-
-              <div className="flex-1 relative bg-slate-900 mx-4 rounded-3xl overflow-hidden border border-white/10 shadow-inner">
-                {!scannedResult ? (
-                  <>
-                    <video 
-                      ref={videoRef} 
-                      autoPlay 
-                      playsInline 
-                      className="w-full h-full object-cover"
-                    />
-                    {/* Scanner Guides with darkened background */}
-                    <div className="absolute inset-0 pointer-events-none">
-                      <div className="absolute inset-0 bg-black/40" style={{ clipPath: 'polygon(0% 0%, 0% 100%, 10% 100%, 10% 30%, 90% 30%, 90% 70%, 10% 70%, 10% 100%, 100% 100%, 100% 0%)' }} />
-                      
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <div className="w-72 h-40 border border-emerald-400/30 rounded-3xl flex items-center justify-center relative bg-transparent overflow-hidden">
-                          {/* Highlighted Corners */}
-                          <div className="absolute top-0 left-0 w-10 h-10 border-t-4 border-l-4 border-emerald-400 rounded-tl-2xl" />
-                          <div className="absolute top-0 right-0 w-10 h-10 border-t-4 border-r-4 border-emerald-400 rounded-tr-2xl" />
-                          <div className="absolute bottom-0 left-0 w-10 h-10 border-b-4 border-l-4 border-emerald-400 rounded-bl-2xl" />
-                          <div className="absolute bottom-0 right-0 w-10 h-10 border-b-4 border-r-4 border-emerald-400 rounded-br-2xl" />
-                          
-                          {/* Animated Scanning Line */}
-                          <motion.div 
-                            animate={{ top: ['10%', '90%', '10%'] }}
-                            transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
-                            className="absolute left-4 right-4 h-0.5 bg-emerald-400/50 shadow-[0_0_15px_rgba(52,211,153,0.8)] z-10"
-                          />
-
-                          <div className="flex flex-col items-center gap-1 z-20">
-                            <div className="bg-emerald-500/20 p-2 rounded-full backdrop-blur-sm">
-                              <Scan className="w-6 h-6 text-emerald-400 animate-pulse" />
-                            </div>
-                            <span className="text-white text-[10px] font-black uppercase tracking-widest text-center px-4 drop-shadow-lg">Posicione a etiqueta</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="absolute bottom-8 left-1/2 -translate-x-1/2">
-                      <motion.button
-                        whileTap={{ scale: 0.9 }}
-                        disabled={isAnalyzing}
-                        onClick={captureAndAnalyze}
-                        className={`w-16 h-16 rounded-full border-4 flex items-center justify-center transition-all ${isAnalyzing ? 'border-slate-700 bg-slate-800' : 'border-white bg-emerald-500'}`}
-                      >
-                        {isAnalyzing ? (
-                          <Loader2 className="w-8 h-8 text-white animate-spin" />
-                        ) : (
-                          <div className="w-12 h-12 rounded-full bg-white/20" />
-                        )}
-                      </motion.button>
-                    </div>
-                  </>
-                ) : (
-                  <div className="absolute inset-0 bg-slate-900 p-6 flex flex-col justify-center overflow-y-auto">
-                    <div className="bg-white rounded-3xl p-6 shadow-2xl">
-                      <div className="flex items-center gap-2 mb-6">
-                        <div className="bg-emerald-100 p-2 rounded-xl">
-                          <Scan className="w-5 h-5 text-emerald-600" />
-                        </div>
-                        <h4 className="text-slate-800 font-bold uppercase text-[10px] tracking-widest leading-none">Confirmar Dados</h4>
-                      </div>
-
-                      <div className="mb-6">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Produto sugerido</label>
-                        <input 
-                          type="text"
-                          value={scannedName}
-                          onChange={(e) => setScannedName(e.target.value)}
-                          className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-4 py-3 text-slate-800 font-bold focus:border-emerald-500 focus:outline-none transition-colors"
-                          placeholder="Nome do produto"
-                        />
-                      </div>
-
-                      <div className="mb-6">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-3 px-1 text-center">Preços encontrados</label>
-                        <div className="grid grid-cols-1 gap-2 max-h-40 overflow-y-auto pr-1">
-                          {scannedResult.prices.map((p, idx) => (
-                            <button
-                              key={idx}
-                              onClick={() => setSelectedScannedPrice(p.value)}
-                              className={`w-full py-3 px-4 rounded-2xl flex justify-between items-center transition-all ${
-                                selectedScannedPrice === p.value 
-                                ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-200 border-2 border-emerald-500' 
-                                : 'bg-slate-50 text-slate-600 border-2 border-slate-100'
-                              }`}
-                            >
-                              <span className="text-[10px] font-black uppercase tracking-wider">
-                                {p.label}
-                              </span>
-                              <span className="text-sm font-black">{formatCurrency(p.value)}</span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="space-y-3">
-                        <motion.button 
-                          whileTap={{ scale: 0.98 }}
-                          disabled={!selectedScannedPrice}
-                          onClick={addItemFromScanner}
-                          className="w-full py-4 rounded-2xl bg-slate-800 text-white font-black text-xs uppercase tracking-widest shadow-xl hover:bg-black transition-all flex justify-center items-center gap-2"
-                        >
-                          Confirmar e Adicionar
-                        </motion.button>
-
-                        <button 
-                          onClick={() => setScannedResult(null)}
-                          className="w-full py-2 text-slate-400 font-bold text-[10px] uppercase tracking-widest hover:text-slate-600 transition-colors"
-                        >
-                          TIRAR OUTRA FOTO
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-                
-                {scannerError && !isAnalyzing && (
-                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-red-500 text-white p-4 rounded-2xl text-center w-64 shadow-xl">
-                    <p className="text-[10px] font-black uppercase mb-2">Erro</p>
-                    <p className="text-xs font-medium leading-tight">{scannerError}</p>
-                    <button onClick={startScanner} className="mt-4 bg-white/20 hover:bg-white/30 px-4 py-2 rounded-xl text-[10px] font-black uppercase transition-colors duration-300">Tentar Novamente</button>
-                  </div>
-                )}
-              </div>
-
-              <div className="p-8 text-center flex flex-col items-center gap-2">
-                <div className="flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-full">
-                  <Sparkles className="w-2.5 h-2.5 text-emerald-400" />
-                  <span className="text-[7px] text-emerald-400 font-black uppercase tracking-tighter">Análise Avançada por Gemini 3.1 Pro</span>
-                </div>
-              </div>
-
-              <canvas ref={canvasRef} className="hidden" />
-            </motion.div>
-          )}
-        </AnimatePresence>
       </div>
     </div>
   );
